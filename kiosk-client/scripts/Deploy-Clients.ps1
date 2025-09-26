@@ -45,7 +45,6 @@ if (-not (Test-Path $StartScript)) { throw "start-kiosk.sh not found at $StartSc
 $Hosts = Get-Content -Path $HostsFile | Where-Object { $_ -and $_.Trim() -notmatch '^#' } | ForEach-Object { $_.Trim() }
 if ($Hosts.Count -eq 0) { throw "No hosts found in $HostsFile" }
 
-# SSH/SCP options
 $CommonOpts = @()
 if ($KeyPath) { $CommonOpts += @('-i', $KeyPath) }
 $CommonOpts += @('-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=/dev/null')
@@ -53,22 +52,21 @@ $CommonOpts += @('-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=/dev/n
 Write-Host "Updating clients from: $StartScript" -ForegroundColor Cyan
 Write-Host "ServerBase: $ServerBase" -ForegroundColor Cyan
 
-foreach ($Host in $Hosts) {
-  Write-Host "---- $Host ----" -ForegroundColor Yellow
-  $target = "$Username@$Host"
+foreach ($ClientHost in $Hosts) {
+  Write-Host "---- $ClientHost ----" -ForegroundColor Yellow
+  $target = "$Username@$ClientHost"
 
   try {
     # 1) Copy latest start-kiosk.sh to /tmp
     Write-Host "[1/4] Copy start script" -ForegroundColor Gray
-    $scpArgs = @($CommonOpts) + @($StartScript, "$target:/tmp/start-kiosk.sh")
+    $scpArgs = @($CommonOpts) + @($StartScript, "${target}:/tmp/start-kiosk.sh")
     scp @scpArgs
-
     # 2) Apply config and move script into place
     Write-Host "[2/4] Apply config and install script" -ForegroundColor Gray
     $remoteCmd = @(
       "set -e",
       "if [ ! -f /etc/kiosk-client.conf ]; then echo 'Creating /etc/kiosk-client.conf'; fi",
-      "echo 'SERVER_BASE=\"$ServerBase\"' | sudo tee /etc/kiosk-client.conf >/dev/null",
+      "echo 'SERVER_BASE=`"$ServerBase`"' | sudo tee /etc/kiosk-client.conf >/dev/null",
       "sudo mv /tmp/start-kiosk.sh /usr/local/bin/start-kiosk.sh",
       "sudo chown root:root /usr/local/bin/start-kiosk.sh",
       "sudo chmod +x /usr/local/bin/start-kiosk.sh"
@@ -100,9 +98,9 @@ foreach ($Host in $Hosts) {
       Write-Host "[4/4] Done (no reboot)" -ForegroundColor Gray
     }
 
-    Write-Host "Success: $Host" -ForegroundColor Green
+    Write-Host "Success: $ClientHost" -ForegroundColor Green
   } catch {
-    Write-Host "Failed: $Host -> $_" -ForegroundColor Red
+    Write-Host "Failed: $ClientHost -> $_" -ForegroundColor Red
   }
 }
 
