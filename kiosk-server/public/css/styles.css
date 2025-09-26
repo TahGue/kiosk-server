@@ -1,0 +1,276 @@
+/* Reset and base styles */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f0f2f5;
+    color: #333;
+    line-height: 1.6;
+    height: 100vh;
+    overflow: hidden;
+}
+
+.kiosk-container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    max-width: 1200px;
+    margin: 0 auto;
+    background-color: #fff;
+    box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
+}
+
+/* Header styles */
+.kiosk-header {
+    background: linear-gradient(135deg, #1a237e, #283593);
+    color: white;
+    padding: 1.5rem 2rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+
+.kiosk-header h1 {
+    font-size: 2rem;
+    font-weight: 500;
+}
+
+.time-display {
+    font-size: 1.5rem;
+    font-family: 'Courier New', monospace;
+    background: rgba(255, 255, 255, 0.1);
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+}
+
+/* Top navigation */
+.kiosk-nav {
+    display: flex;
+    gap: 0.75rem;
+    background: #e8eaf6;
+    border-bottom: 1px solid #e5e7eb;
+    padding: 0.75rem 1rem;
+}
+
+.nav-btn {
+    display: inline-block;
+    background: #fff;
+    color: #1a237e;
+    border: 1px solid #cbd5e1;
+    border-radius: 999px;
+    padding: 0.4rem 0.9rem;
+    text-decoration: none;
+    font-weight: 500;
+    transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.nav-btn:hover {
+    background: #1a237e;
+    color: #fff;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+}
+
+/* Main content styles */
+.kiosk-content {
+    flex: 1;
+    padding: 2rem;
+    overflow-y: auto;
+    background-color: #f8f9fa;
+}
+
+.content-panel {
+    background: white;
+    border-radius: 8px;
+    padding: 2rem;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+    margin-bottom: 2rem;
+}
+
+.content-panel h2 {
+    color: #1a237e;
+    margin-bottom: 1.5rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid #e8eaf6;
+}
+
+.info-box {
+    background: #f8f9fa;
+    border-left: 4px solid #3949ab;
+    padding: 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+}
+
+/* Kiosk stage */
+.kiosk-stage {
+    position: relative;
+    width: 100%;
+    height: 60vh;
+    background: #000;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,0.05);
+}
+
+#kiosk-frame {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: none;
+    background: #fff;
+}
+
+.blackout {
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,0.95);
+    z-index: 2;
+}
+
+.hidden { display: none !important; }
+
+/* Control Panel */
+#control-panel h2 {
+    color: #1a237e;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid #e8eaf6;
+}
+
+.secondary-controls {
+    margin-top: 0.75rem;
+    gap: 1rem;
+}
+
+.secondary-controls button {
+    background: #5c6bc0;
+}
+
+.secondary-controls button:hover {
+    background: #3949ab;
+}
+
+.spacer { flex-grow: 1; }
+
+/* Panel header (shared) */
+.panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.panel-header h2 {
+    margin: 0;
+    padding: 0;
+    border: none;
+}
+
+/* Panel actions buttons (shared) */
+.panel-actions button,
+#btn-refresh-devices {
+    background: #7986cb;
+    color: white;
+    border: none;
+    padding: 0.4rem 0.8rem;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.panel-actions button:hover,
+#btn-refresh-devices:hover { background: #5c6bc0; }
+
+.devices-list-container {
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid #e8eaf6;
+    border-radius: 6px;
+    padding: 0.5rem;
+}
+
+.device-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.3rem 0.5rem;
+    border-bottom: 1px solid #eee;
+    flex-wrap: wrap;
+}
+
+.device-item:last-child { border-bottom: none; }
+
+.device-id { font-weight: bold; flex: 1; min-width: 100px; }
+.device-ip { flex: 1; min-width: 100px; }
+.device-agent { flex: 2; min-width: 200px; font-size: 0.9em; }
+.device-url { flex: 2; min-width: 200px; font-size: 0.9em; word-break: break-all; }
+.device-action { flex: 1; min-width: 80px; text-align: right; }
+.device-action button { background: #5c6bc0; color: white; border: none; padding: 0.3rem 0.6rem; border-radius: 4px; cursor: pointer; }
+.device-action button:hover { background: #3949ab; }
+
+/* Preview controls */
+#preview-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    padding: 1rem;
+    background: #f5f5f5;
+    border-radius: 6px;
+}
+
+#preview-controls button {
+    background: #5c6bc0;
+    color: white;
+    border: none;
+    padding: 0.6rem 1.2rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 1rem;
+    margin-bottom: 1rem;
+}
+
+#preview-controls button:hover {
+    background: #3949ab;
+}
+
+#preview-controls p {
+    font-size: 1rem;
+    color: #333;
+    max-width: 100%;
+    word-break: break-all;
+    text-align: center;
+}
+
+/* Footer styles */
+.kiosk-footer {
+    background: #1a237e;
+    color: white;
+    text-align: center;
+    padding: 1rem;
+    font-size: 0.9rem;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    .kiosk-header {
+        flex-direction: column;
+        text-align: center;
+        gap: 1rem;
+    }
+    
+    .kiosk-content {
+        padding: 1rem;
+    }
+    
+    .content-panel {
+        padding: 1rem;
+    }
+    .kiosk-stage { height: 50vh; }
+}

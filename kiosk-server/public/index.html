@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Kiosk Display</title>
+    <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+    <div class="kiosk-container">
+        <header class="kiosk-header">
+            <h1 id="kiosk-title">Welcome to Kiosk</h1>
+            <div id="current-time" class="time-display"></div>
+        </header>
+        
+        <nav class="kiosk-nav">
+            <a class="nav-btn" href="#info">Home</a>
+            <a class="nav-btn" href="#stage">Dashboard</a>
+            <a class="nav-btn" href="/about.html">About</a>
+            <a class="nav-btn" href="/admin">Admin</a>
+        </nav>
+        
+        <main class="kiosk-content">
+            <div id="control-panel" class="content-panel">
+                <h2>Control Panel</h2>
+                <div class="admin-row">
+                    <input id="admin-url" type="text" placeholder="Enter a URL to display" />
+                    <button id="btn-apply-url">Switch URL</button>
+                </div>
+
+            <div class="content-panel" id="deploy-panel">
+                <div class="panel-header">
+                    <h2>Deploy to Clients</h2>
+                </div>
+                <div class="admin-row" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                    <input id="deploy-username" type="text" placeholder="SSH Username (e.g., student)" style="min-width:200px;" />
+                    <input id="deploy-password" type="password" placeholder="SSH Password (optional if using key)" style="min-width:240px;" />
+                    <input id="deploy-server-base" type="text" placeholder="Server Base (e.g., http://192.168.0.10:4000)" style="min-width:320px; flex:1;" />
+                </div>
+                <div class="admin-row" style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.5rem;">
+                    <textarea id="deploy-hosts" placeholder="Optional hosts (one IP/hostname per line). Leave empty to auto-scan LAN." rows="3" style="width:100%;"></textarea>
+                </div>
+                <div class="admin-row secondary-controls" style="display:flex; gap:1rem; align-items:center; margin-top:0.5rem;">
+                    <label><input type="checkbox" id="deploy-run-setup" /> Run first-time setup</label>
+                    <label><input type="checkbox" id="deploy-reboot" /> Reboot after deploy</label>
+                    <div class="spacer"></div>
+                    <button id="btn-deploy">Deploy</button>
+                </div>
+                <div id="deploy-result" class="info-box" style="display:none; margin-top:1rem;"></div>
+            </div>
+                <div class="admin-row secondary-controls">
+                    <button id="btn-reload">Reload Frame</button>
+                    <label class="switch">
+                        <input type="checkbox" id="toggle-blackout" />
+                        <span>Blackout</span>
+                    </label>
+                    <div class="spacer"></div>
+                    <input id="admin-token" type="password" placeholder="Admin Token" />
+                </div>
+            </div>
+
+            <div class="content-panel" id="devices-panel">
+                <div class="panel-header">
+                    <h2>Connected Devices</h2>
+                    <button id="btn-refresh-devices">Refresh</button>
+                </div>
+                <div id="devices-list" class="devices-list-container">
+                    <!-- Device list will be rendered here by JavaScript -->
+                    <p>Loading devices...</p>
+                </div>
+            </div>
+
+            <div class="content-panel" id="lan-panel">
+                <div class="panel-header">
+                    <h2>Network Devices</h2>
+                    <div class="panel-actions">
+                        <button id="btn-show-interfaces">Interfaces</button>
+                        <button id="btn-scan-lan">Scan Network</button>
+                    </div>
+                </div>
+                <div id="lan-interfaces" class="devices-list-container hidden"></div>
+                <div id="lan-results" class="devices-list-container">
+                    <p>Click <strong>Scan Network</strong> to discover devices on your LAN.</p>
+                </div>
+            </div>
+
+            <div id="stage" class="kiosk-stage">
+                <div id="preview-controls">
+                    <button id="btn-open-url">Open Current URL</button>
+                    <p id="current-url-display">URL not set</p>
+                </div>
+                <div id="blackout-overlay" class="blackout hidden"></div>
+            </div>
+
+        </main>
+        
+        <footer class="kiosk-footer">
+            <p id="kiosk-footer"> 2023 Kiosk System</p>
+        </footer>
+    </div>
+
+    <script src="/js/main.js"></script>
+</body>
+</html>

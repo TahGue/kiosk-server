@@ -1,0 +1,45 @@
+# General
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+
+# Node / npm
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# IDE / Editor
+.vscode/
+.idea/
+*.code-workspace
+
+# OS-specific
+.Spotlight-V100
+.Trashes
+
+# Kiosk server static repo (generated)
+kiosk-server/public/repo/*.deb
+kiosk-server/public/repo/Packages
+kiosk-server/public/repo/Packages.gz
+kiosk-server/public/repo/Release
+
+# Backups / archives
+*.bak
+*.old
+*.orig
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z

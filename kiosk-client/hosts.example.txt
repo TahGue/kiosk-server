@@ -1,0 +1,5 @@
+# One host (IP or hostname) per line. Lines starting with # are comments.
+# Example:
+192.168.0.201
+192.168.0.202
+kiosk-03.local

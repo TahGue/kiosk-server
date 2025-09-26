@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Kiosk Client</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        iframe { border: none; width: 100vw; height: 100vh; }
+        #embed-error {
+            position: fixed;
+            inset: 0;
+            background: #111;
+            color: #fff;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 24px;
+        }
+        #embed-error .panel {
+            max-width: 640px;
+            background: #1e1e1e;
+            border: 1px solid #333;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 6px 24px rgba(0,0,0,0.4);
+        }
+        #embed-error h2 { margin-top: 0; font-size: 20px; }
+        #embed-error p { color: #ccc; }
+        #open-full-btn {
+            margin-top: 12px;
+            background: #0ea5e9;
+            color: #001018;
+            border: none;
+            border-radius: 8px;
+            padding: 10px 16px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <iframe id="kioskFrame" src="about:blank" allow="" referrerpolicy="no-referrer"></iframe>
+    <div id="embed-error">
+        <div class="panel">
+            <h2>Unable to display this site inside the kiosk frame</h2>
+            <p>The target website blocks embedding via X-Frame-Options or Content Security Policy.</p>
+            <p>You can still open it directly in a full window. Note that this leaves the kiosk shell and its shortcut protections.</p>
+            <button id="open-full-btn">Open Full Screen</button>
+        </div>
+    </div>
+    <script>
+        // Fetch config and load kioskUrl in iframe
+        fetch('/api/config')
+            .then(res => res.json())
+            .then(cfg => {
+                if (cfg.kioskUrl) {
+                    // Ensure the URL is absolute with a scheme
+                    let targetUrl = cfg.kioskUrl.trim();
+                    if (!/^https?:\/\//i.test(targetUrl)) {
+                        targetUrl = 'https://' + targetUrl;
+                    }
+                    // Load URL into iframe
+                    const frame = document.getElementById('kioskFrame');
+                    const overlay = document.getElementById('embed-error');
+                    const openBtn = document.getElementById('open-full-btn');
+                    frame.src = targetUrl;
+
+                    // If the frame does not complete load within timeout, show fallback
+                    let loaded = false;
+                    const onLoad = () => { loaded = true; };
+                    frame.addEventListener('load', onLoad, { once: true });
+                    setTimeout(() => {
+                        if (!loaded) {
+                            overlay.style.display = 'flex';
+                        }
+                    }, 2500);
+
+                    openBtn.addEventListener('click', () => {
+                        // Navigate this window to preserve kiosk focus
+                        window.location.href = targetUrl;
+                    });
+                    
+                    // Send registration info to server
+                    fetch('/api/register', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ currentUrl: targetUrl })
+                    }).catch(err => console.error('Failed to register with server', err));
+                    
+                    // Disable context menu if configured
+                    if (cfg.disableContextMenu) {
+                        document.addEventListener('contextmenu', function(e) {
+                            e.preventDefault();
+                        });
+                    }
+                    
+                    // Disable keyboard shortcuts if configured
+                    if (cfg.disableShortcuts) {
+                        document.addEventListener('keydown', function(e) {
+                            // Prevent Alt+F4
+                            if (e.altKey && e.key === 'F4') {
+                                e.preventDefault();
+                            }
+                            // Prevent other common shortcuts (Ctrl+W, Ctrl+T, etc.)
+                            if (e.ctrlKey && ['w', 'W', 't', 'T', 'n', 'N'].includes(e.key)) {
+                                e.preventDefault();
+                            }
+                            // Prevent F11 (fullscreen toggle)
+                            if (e.key === 'F11') {
+                                e.preventDefault();
+                            }
+                        });
+                    }
+                } else {
+                    document.body.innerHTML = '<p>No URL set. Please configure kioskUrl on the server.</p>';
+                }
+            })
+            .catch(err => {
+                console.error('Failed to fetch config', err);
+                document.body.innerHTML = '<p>Error loading kiosk URL. Check server connection.</p>';
+            });
+    </script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>About • Kiosk</title>
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <div class="kiosk-container">
+    <header class="kiosk-header">
+      <h1>About This Kiosk</h1>
+      <div id="current-time" class="time-display"></div>
+    </header>
+
+    <nav class="kiosk-nav">
+      <a class="nav-btn" href="/">Home</a>
+      <a class="nav-btn" href="/?admin=1">Admin</a>
+    </nav>
+
+    <main class="kiosk-content">
+      <div class="content-panel">
+        <h2>Overview</h2>
+        <p>This kiosk is powered by a Node.js/Express server and a lightweight frontend designed for always-on displays.</p>
+      </div>
+
+      <div class="content-panel">
+        <h2>Features</h2>
+        <ul>
+          <li>Server-controlled URL switching</li>
+          <li>Blackout overlay and reload controls</li>
+          <li>Admin UI at <code>/?admin=1</code></li>
+          <li>Live updates via Server-Sent Events</li>
+        </ul>
+      </div>
+    </main>
+
+    <footer class="kiosk-footer">
+      <p id="kiosk-footer">© 2025 Kiosk System</p>
+    </footer>
+  </div>
+
+  <script src="/js/main.js"></script>
+</body>
+</html>

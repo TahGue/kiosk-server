@@ -1,0 +1,8 @@
+{
+  "::1": {
+    "kioskUrl": "google.com"
+  },
+  "::ffff:192.168.0.122": {
+    "kioskUrl": "google.com"
+  }
+}
