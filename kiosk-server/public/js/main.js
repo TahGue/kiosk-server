@@ -136,28 +136,32 @@ function initKiosk() {
     fetchServerTime();
     setInterval(fetchServerTime, 30000);
     
-    // Conditional kiosk restrictions based on flags
-    document.addEventListener('contextmenu', (e) => {
-        if (window.__kioskFlags?.disableContextMenu) {
-            e.preventDefault();
-            return false;
-        }
-    });
-    document.addEventListener('keydown', (e) => {
-        if (window.__kioskFlags?.disableShortcuts) {
-            if (e.ctrlKey || e.altKey || e.metaKey) {
-                if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+    // Conditional kiosk restrictions (only for client view, not admin)
+    const isClientView = window.location.pathname.endsWith('/client') || window.location.pathname.endsWith('/client.html');
+    if (isClientView) {
+        document.addEventListener('contextmenu', (e) => {
+            if (window.__kioskFlags?.disableContextMenu) {
+                e.preventDefault();
+                return false;
+            }
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (window.__kioskFlags?.disableShortcuts) {
+                if (e.ctrlKey || e.altKey || e.metaKey) {
+                    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+                        e.preventDefault();
+                        return false;
+                    }
+                }
+                if (['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'].includes(e.key)) {
                     e.preventDefault();
                     return false;
                 }
             }
-            if (['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'].includes(e.key)) {
-                e.preventDefault();
-                return false;
-            }
-        }
-    });
-    
+        });
+    }
+
     // Admin UI events
     const btnApply = document.getElementById('btn-apply-url');
     btnApply?.addEventListener('click', async () => {
@@ -366,6 +370,11 @@ function initKiosk() {
     const chkReboot = document.getElementById('deploy-reboot');
     const deployResult = document.getElementById('deploy-result');
 
+    // Auto-fill server base URL from current location
+    if (inputServerBase) {
+        inputServerBase.value = window.location.origin;
+    }
+
     async function deployToClients() {
         if (!inputUsername || !inputServerBase) return;
         const username = (inputUsername.value || '').trim();
@@ -387,11 +396,20 @@ function initKiosk() {
             if (hosts) body.hosts = hosts;
             // Ask server to also seed SSH config on clients when possible
             body.sshConfig = { enable: true, user: username };
+            if (password) {
+                body.sshConfig.password = password;
+            }
 
             const resp = await postJson('/api/deploy', body);
             if (deployResult) {
                 if (resp && Array.isArray(resp.results)) {
-                    const lines = resp.results.map(r => `${r.host}: ${r.ok ? 'OK' : 'FAIL'}${r.error ? ' - ' + r.error : ''}`);
+                    const lines = resp.results.map(r => {
+                    let errorDetails = r.error || r.stderr || '';
+                    if (errorDetails && errorDetails.includes('sudo: a password is required')) {
+                        errorDetails = 'Authentication failed: Incorrect password for sudo.';
+                    }
+                    return `${r.host}: ${r.ok ? 'OK' : 'FAIL'}${errorDetails ? ' - ' + errorDetails.trim() : ''}`;
+                });
                     deployResult.innerHTML = `<strong>Deploy finished</strong><br/>` + lines.join('<br/>');
                 } else {
                     deployResult.textContent = 'Deploy finished (no details)';
@@ -405,6 +423,50 @@ function initKiosk() {
     }
 
     btnDeploy?.addEventListener('click', deployToClients);
+
+    // Restart Clients wiring
+    const btnRestart = document.getElementById('btn-restart');
+    const inputRestartUsername = document.getElementById('restart-username');
+    const inputRestartPassword = document.getElementById('restart-password');
+    const inputRestartHosts = document.getElementById('restart-hosts');
+    const restartResult = document.getElementById('restart-result');
+
+    async function restartClients() {
+        if (!inputRestartUsername) return;
+        const username = (inputRestartUsername.value || '').trim();
+        const password = (inputRestartPassword?.value || '').trim();
+        const hostsRaw = (inputRestartHosts?.value || '').trim();
+        const hosts = hostsRaw ? hostsRaw.split(/\r?\n/).map(s => s.trim()).filter(Boolean) : undefined;
+
+        if (!username) { alert('SSH username is required'); return; }
+
+        if (restartResult) { restartResult.style.display = 'block'; restartResult.textContent = 'Restarting clients...'; }
+        btnRestart && (btnRestart.disabled = true);
+        try {
+            const body = { username };
+            if (password) body.password = password;
+            if (hosts) body.hosts = hosts;
+
+            const resp = await postJson('/api/restart', body);
+            if (restartResult) {
+                if (resp && Array.isArray(resp.results)) {
+                    const lines = resp.results.map(r => {
+                        let errorDetails = r.error || r.stderr || '';
+                        return `${r.host}: ${r.ok ? 'OK - Restarted' : 'FAIL'}${errorDetails ? ' - ' + errorDetails.trim() : ''}`;
+                    });
+                    restartResult.innerHTML = `<strong>Restart finished</strong><br/>` + lines.join('<br/>');
+                } else {
+                    restartResult.textContent = 'Restart finished (no details)';
+                }
+            }
+        } catch (err) {
+            if (restartResult) restartResult.textContent = `Restart failed: ${err.message || err}`;
+        } finally {
+            btnRestart && (btnRestart.disabled = false);
+        }
+    }
+
+    btnRestart?.addEventListener('click', restartClients);
 }
 
 // Start the kiosk when the DOM is fully loaded

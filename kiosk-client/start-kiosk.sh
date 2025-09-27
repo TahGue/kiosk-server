@@ -41,26 +41,29 @@ log() {
   echo "$msg"
 }
 
+# Function to check if a command is available
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
 # Ping with retries
 ping_with_retries() {
   local host="$1"; local retries="${2:-3}"; local wait="${3:-1}"
   local i=0
   while (( i < retries )); do
     if ping -c1 -W1 "$host" >/dev/null 2>&1; then return 0; fi
-    sleep "$wait"; i=$((i+1))
   done
   return 1
 }
 
 # Choose reachable server from SERVER_BASE and SERVER_CANDIDATES
 choose_server() {
-  local candidates=("$SERVER_BASE" "${SERVER_CANDIDATES[@]}")
+  local candidates=($SERVER_BASE "${SERVER_CANDIDATES[@]}")
   local c host
   for c in "${candidates[@]}"; do
     host="${c#http://}"
     host="${host#https://}"
-    host="${host%%/*}"
-    host="${host%%:*}"
+    host="$(echo "$host" | awk '{print $1}' FS=':|/')"
     if ping_with_retries "$host" 5 1; then
       echo "$c"; return 0
     fi
@@ -71,6 +74,7 @@ choose_server() {
 # Network validation: warn on subnet mismatch
 validate_network() {
   local ip line
+{{ ... }}
   ip=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4" "$2}' | head -n1)
   if [[ -z "$ip" ]]; then
     log "WARN: No global IPv4 assigned. Check cables/DHCP."
@@ -164,47 +168,80 @@ if [[ "$(id -u)" -eq 0 ]]; then
 SERVER_BASE="$SERVER_BASE"
 
 # Optional SSH settings (used by setup to enable remote management)
-# Set SSH_ENABLE to "true" to install and enable openssh-server.
-#SSH_ENABLE="true"
+# By default we enable SSH and password auth so mass-deploy can work out of the box.
+SSH_ENABLE="true"
 
 # SSH user to manage (default: "student")
-#SSH_USER="student"
+SSH_USER="student"
 
-# SSH password for the user (leave empty to skip password setup)
-#WARNING: Storing passwords in plain text is insecure. Use at your own risk on trusted networks only.
-#SSH_PASSWORD=""
+# SSH password for the user. If left empty, setup will generate a random password
+# and print it to the console; it will also be stored in /etc/kiosk-ssh-password.txt (root-only).
+# WARNING: Storing passwords in plain text is insecure. Use at your own risk on trusted networks only.
+SSH_PASSWORD=""
 
 # Public key to authorize for the SSH user (recommended). Paste the full key line (e.g., ssh-ed25519 AAAA... user@host)
 #SSH_AUTHORIZED_KEY=""
 
 # Whether to allow password authentication: "yes" or "no". Defaults to "no" if not set.
-#SSH_PASSWORD_AUTH="no"
+SSH_PASSWORD_AUTH="yes"
 
 # VNC remote support (optional, offline LAN debugging)
 #VNC_ENABLE="false"
 #VNC_PASSWORD=""  # optional; if empty, no password is set
 EOCFG
 
+   # Ensure the current script is installed for user-mode launching
+   echo "[+] Installing user-mode launcher to /usr/local/bin/kiosk-client.sh ..."
+   install -m 0755 "$0" /usr/local/bin/kiosk-client.sh || cp "$0" /usr/local/bin/kiosk-client.sh && chmod 0755 /usr/local/bin/kiosk-client.sh
+
    echo "[+] Creating kiosk session script..."
    cat > /usr/local/bin/kiosk-session.sh << 'EOL'
 #!/bin/bash
 # This script is run automatically on login for the kiosk user.
 
-# Clean up previous session state to prevent popups
-rm -rf ~/.config/google-chrome/Default/Preferences
+# Start xbindkeys for global shortcuts (e.g., switch user)
+if command -v xbindkeys >/dev/null 2>&1; then
+  xbindkeys -f "$HOME/.xbindkeysrc" >/dev/null 2>&1 &
+fi
 
-# Infinite loop to keep the browser running
-while true; do
-  # Load client config on each iteration, so remote config changes take effect
-  if [[ -f /etc/kiosk-client.conf ]]; then
-    . /etc/kiosk-client.conf
-  fi
-  google-chrome --kiosk --no-first-run --disable-infobars --start-fullscreen --window-position=0,0 "$SERVER_BASE/client"
-  sleep 2
-done
+# Load client config (e.g., SERVER_BASE)
+if [[ -f /etc/kiosk-client.conf ]]; then
+  . /etc/kiosk-client.conf
+fi
+
+# Prefer launching the installed user-mode kiosk client which handles browser detection and failover
+CLIENT_LAUNCHER="/usr/local/bin/kiosk-client.sh"
+if [[ -x "$CLIENT_LAUNCHER" ]]; then
+  exec "$CLIENT_LAUNCHER"
+fi
+
+# Fallback: try common browsers directly
+if command -v firefox >/dev/null 2>&1; then
+  exec firefox -kiosk --fullscreen "${SERVER_BASE:-http://localhost:4000}/client"
+fi
+if command -v midori >/dev/null 2>&1; then
+  exec midori -e Fullscreen=1 "${SERVER_BASE:-http://localhost:4000}/client"
+fi
+if command -v google-chrome >/dev/null 2>&1; then
+  exec google-chrome --kiosk --no-first-run --disable-infobars --start-fullscreen --window-position=0,0 "${SERVER_BASE:-http://localhost:4000}/client"
+fi
+
+# Last resort: show a simple message if available
+if command -v xmessage >/dev/null 2>&1; then
+  xmessage -center "No supported browser found. Please install Firefox or Midori."
+fi
+exit 1
 EOL
 
    chmod +x /usr/local/bin/kiosk-session.sh
+
+   # --- 3.0 Install xbindkeys and set keybinding (Ctrl+Alt+S -> switch user) ---
+   apt-get install -y xbindkeys >/dev/null 2>&1 || true
+   su - student -c 'cat > ~/.xbindkeysrc << "XBCFG" 
+"dm-tool switch-to-greeter"
+  Control+Alt + s
+XBCFG
+'
 
    # --- 3.1 Enable and configure SSH if requested ---
    echo "[+] Checking SSH configuration..."
@@ -218,8 +255,8 @@ EOL
      echo "[+] Installing and enabling OpenSSH server..."
      apt-get update || true
      apt-get install -y openssh-server || true
-     systemctl enable ssh || systemctl enable sshd || true
-     systemctl start ssh || systemctl start sshd || true
+     { systemctl enable ssh || systemctl enable sshd; } 2>&1 || true
+     { systemctl start ssh || systemctl start sshd; } 2>&1 || true
 
      # Ensure user exists
      if ! id -u "$SSH_USER_TO_USE" >/dev/null 2>&1; then
@@ -231,6 +268,17 @@ EOL
      if [[ -n "${SSH_PASSWORD}" ]]; then
        echo "[+] Setting password for '$SSH_USER_TO_USE'..."
        echo "$SSH_USER_TO_USE:${SSH_PASSWORD}" | chpasswd || true
+     else
+       # Generate a strong random password if not provided
+       gen_pw=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 14)
+       if [[ -n "$gen_pw" ]]; then
+         echo "[+] No SSH_PASSWORD provided. Generating a random password for '$SSH_USER_TO_USE'."
+         echo "$SSH_USER_TO_USE:${gen_pw}" | chpasswd || true
+         echo "$gen_pw" > /etc/kiosk-ssh-password.txt
+         chmod 600 /etc/kiosk-ssh-password.txt
+         echo "[i] Generated SSH password stored at /etc/kiosk-ssh-password.txt (root-only)."
+         echo "[i] Use this password in the Deploy panel for initial access, then switch to SSH keys."
+       fi
      fi
 
      # Configure authorized_keys if provided
@@ -332,10 +380,6 @@ if [[ "$(id -u)" -eq 0 ]]; then
    exit 1
 fi
 
-# Function to check if a command is available
-command_exists() {
-  command -v "$1" >/dev/null 2>&1
-}
 
 # --- Browser Detection and Setup ---
 log "Detecting available browsers and system state..."
@@ -345,8 +389,16 @@ hardware_summary || true
 # Screen resolution detection (fallback to safe 1024x768)
 RESOLUTION="1024,768"
 if command_exists xrandr; then
-  curr=$(xrandr --current 2>/dev/null | awk '/\*/ {print $1; exit}')
-  if [[ -n "$curr" ]]; then RESOLUTION="${curr/x/","}"; fi
+  # Get the primary display resolution
+  curr=$(xrandr --current 2>/dev/null | grep -E '\*' | awk '{print $1}' | head -1)
+  if [[ -n "$curr" && "$curr" =~ ^[0-9]+x[0-9]+$ ]]; then 
+    RESOLUTION="${curr/x/","}"
+    log "Detected screen resolution: $curr (using $RESOLUTION for browser)"
+  else
+    log "Could not detect resolution, using fallback: 1024x768"
+  fi
+else
+  log "xrandr not available, using fallback resolution: 1024x768"
 fi
 
 # Lightweight browser preference logic
@@ -357,7 +409,7 @@ if [[ -n "$mem_mb" && "$mem_mb" -le 4096 ]]; then prefer_light=1; fi
 if command_exists "firefox" && (( prefer_light == 0 )); then
   log "Found Firefox. Using it for kiosk mode."
   BROWSER_EXECUTABLE="firefox"
-  BROWSER_ARGS="-kiosk --fullscreen"
+  BROWSER_ARGS="-kiosk --fullscreen --no-first-run --disable-default-browser-check --disable-extensions --disable-plugins --disable-session-restore --no-remote --private-window --width=${RESOLUTION%,*} --height=${RESOLUTION#*,}"
 elif command_exists "midori"; then
   log "Using Midori (lightweight) for kiosk mode."
   BROWSER_EXECUTABLE="midori"
@@ -365,11 +417,11 @@ elif command_exists "midori"; then
 elif command_exists "firefox"; then
   log "Using Firefox (available) for kiosk mode."
   BROWSER_EXECUTABLE="firefox"
-  BROWSER_ARGS="-kiosk --fullscreen"
+  BROWSER_ARGS="-kiosk --fullscreen --no-first-run --disable-default-browser-check --disable-extensions --disable-plugins --disable-session-restore --no-remote --private-window --width=${RESOLUTION%,*} --height=${RESOLUTION#*,}"
 elif command_exists "google-chrome"; then
   log "Using Google Chrome (heavier) for kiosk mode."
   BROWSER_EXECUTABLE="google-chrome"
-  BROWSER_ARGS="--kiosk --no-first-run --disable-infobars --disable-session-crashed-bubble --disable-extensions --disable-component-update --no-default-browser-check --start-fullscreen --window-size=${RESOLUTION} --window-position=0,0"
+  BROWSER_ARGS="--kiosk --no-first-run --disable-infobars --disable-crash-reporter --disable-session-crashed-bubble --disable-features=TranslateUI --no-default-browser-check --start-fullscreen --window-size=${RESOLUTION} --window-position=0,0"
 else
   log "ERROR: No supported browser found (Firefox/Midori/Chrome). Please install Firefox or Midori from local repo or via USB (dpkg -i)."
   echo "Server down, check cables | No browser available"
@@ -414,7 +466,7 @@ fetch_kiosk_url() {
   local cfg url
   if [[ -z "$ACTIVE_SERVER" ]]; then return 1; fi
   cfg=$(curl -fsS --connect-timeout 2 --max-time 4 "$ACTIVE_SERVER/api/config") || return 1
-  url=$(echo "$cfg" | sed -n 's/.*"kioskUrl"\s*:\s*"\([^"]*\)".*/\1/p')
+  url=$(echo "$cfg" | awk -F'"' '/"kioskUrl"/ {print $4}')
   echo "$url"
 }
 
@@ -471,7 +523,7 @@ if [[ "$BROWSER_EXECUTABLE" == "google-chrome" ]]; then
 fi
 
 log "Press Ctrl+C in this terminal to stop the kiosk script."
-log "To exit kiosk mode, press Ctrl+Alt+Shift+Q - this will close the browser."
+  log "To exit kiosk mode, press Ctrl+Alt+Shift+Q - this will close the browser."
 
 launch_browser() {
   log "Launching browser in kiosk mode for: $KIOSK_URL_RUNNING"
@@ -483,24 +535,24 @@ is_running() {
   kill -0 "$BROWSER_PID" >/dev/null 2>&1
 }
 
-# Track the currently running URL
-KIOSK_URL_RUNNING="$KIOSK_URL"
-if [[ -z "$KIOSK_URL_RUNNING" ]]; then
-  KIOSK_URL_RUNNING=$(fetch_kiosk_url)
-fi
-
 if [[ -z "$KIOSK_URL_RUNNING" ]]; then
   log "Waiting for kioskUrl to be set on server or using offline page..."
 fi
 
-launch_browser
+# Initialize running URL and start the browser once
+KIOSK_URL_RUNNING="${KIOSK_URL}"
+trap 'if [[ -n "$BROWSER_PID" ]]; then kill "$BROWSER_PID" 2>/dev/null; fi; exit 0' SIGINT SIGTERM
+
+if [[ -z "$KIOSK_URL_RUNNING" || "$KIOSK_URL_RUNNING" == "file://"* ]]; then
+  log "Initial URL is empty or offline. Waiting for server before first launch."
+else
+  launch_browser
+fi
 
 # Monitor for changes and process health
 while true; do
   sleep 10
-
-  # Re-evaluate server reachability and switch if needed
-  local prev_server="$ACTIVE_SERVER"
+  prev_server="$ACTIVE_SERVER"
   ACTIVE_SERVER=$(choose_server) || true
   if [[ -z "$ACTIVE_SERVER" ]]; then
     NEW_URL="file://$OFFLINE_PAGE"
@@ -514,6 +566,7 @@ while true; do
     # Get latest URL from server with active endpoint
     NEW_URL=$(fetch_kiosk_url)
   fi
+
   if [[ -n "$NEW_URL" && "$NEW_URL" != "$KIOSK_URL_RUNNING" ]]; then
     log "Detected kioskUrl change -> $NEW_URL"
     KIOSK_URL_RUNNING="$NEW_URL"

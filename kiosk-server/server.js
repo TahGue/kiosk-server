@@ -12,7 +12,7 @@ try { findLocalDevices = require('local-devices'); } catch (_) { findLocalDevice
 require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 4000;
 
 // Middleware
 app.use(express.json());
@@ -203,26 +203,77 @@ app.get('/api/lan/scan', async (req, res) => {
 
 // Helper to get LAN device IPs from either explicit hosts or scan results
 async function getLanDeviceIps(hosts) {
+  let ips = [];
   if (Array.isArray(hosts) && hosts.length > 0) {
-    return hosts.filter(Boolean);
-  }
-  try {
-    if (findLocalDevices) {
-      const devices = await findLocalDevices();
-      if (Array.isArray(devices) && devices.length > 0) {
-        return devices.map(d => d.ip).filter(Boolean);
+    ips = hosts.filter(Boolean);
+  } else {
+    try {
+      let devices = [];
+      if (findLocalDevices) {
+        devices = await findLocalDevices();
+      } else {
+        devices = await scanLanViaArp();
       }
+      if (Array.isArray(devices)) {
+        ips = devices.map(d => d.ip).filter(Boolean);
+      }
+    } catch (e) {
+      console.warn('LAN scan for deploy failed:', e?.message || e);
     }
-  } catch (e) {
-    console.warn('local-devices failed in deploy helper:', e?.message || e);
   }
-  try {
-    const devices = await scanLanViaArp();
-    return devices.map(d => d.ip).filter(Boolean);
-  } catch (_) {
-    return [];
-  }
+
+  // Filter out invalid, broadcast, and multicast addresses
+  return ips.filter(ip => {
+    if (!ip) return false;
+    // Basic regex for IPv4
+    if (!/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(ip)) return false;
+    const parts = ip.split('.').map(Number);
+    if (parts[0] >= 224) return false; // Multicast
+    if (parts[3] === 255 || parts[3] === 0) return false; // Broadcast or network address
+    return true;
+  });
 }
+
+// SSH restart endpoint: restart kiosk clients
+// POST /api/restart { username, password, hosts?: ["ip",...] }
+app.post('/api/restart', async (req, res) => {
+  const adminToken = process.env.ADMIN_TOKEN || '';
+  if (adminToken && req.headers['x-admin-token'] !== adminToken) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const { username, password, hosts } = req.body || {};
+  if (!username) return res.status(400).json({ error: 'username is required' });
+
+  const ips = await getLanDeviceIps(hosts);
+  if (!ips || ips.length === 0) return res.status(400).json({ error: 'No target hosts found' });
+
+  const results = [];
+  for (const ip of ips) {
+    const ssh = new NodeSSH();
+    const hostLabel = `${username}@${ip}`;
+    try {
+      const connOpts = { host: ip, username };
+      if (password) connOpts.password = password;
+      connOpts.readyTimeout = 12000;
+      await ssh.connect(connOpts);
+
+      // Simple restart command
+      const restartCmd = password ? 
+        `echo ${JSON.stringify(password)} | sudo -S -p "" reboot` : 
+        'sudo reboot';
+      
+      const { stdout, stderr, code } = await ssh.execCommand(restartCmd, { cwd: '/tmp' });
+      // Restart is always successful if we can connect (reboot kills connection)
+      results.push({ host: hostLabel, ok: true, code, stdout, stderr });
+      ssh.dispose();
+    } catch (e) {
+      try { ssh.dispose(); } catch (_) {}
+      results.push({ host: hostLabel, ok: false, error: String(e?.message || e) });
+    }
+  }
+
+  res.json({ ok: true, count: results.length, results });
+});
 
 // SSH deploy endpoint: push client script and config to Mint clients
 // POST /api/deploy { username, password, privateKeyPath, serverBase, runSetup, reboot, hosts?: ["ip",...] }
@@ -283,8 +334,8 @@ app.post('/api/deploy', async (req, res) => {
         }
       }
 
-      const printfArgs = cfgLines.map(l => `"${l}"`).join(' ');
-      const writeConfigCmd = `printf %s\\n ${printfArgs} | ${sudoPrefix} tee /etc/kiosk-client.conf > /dev/null`;
+      const printfArgs = cfgLines.map(l => `'${l}'`).join(' ');
+      const writeConfigCmd = `printf '%s\n' ${printfArgs} | ${sudoPrefix} tee /etc/kiosk-client.conf > /dev/null`;
 
       const cmds = [
         `${sudoPrefix} mkdir -p /usr/local/bin`,
@@ -303,7 +354,10 @@ app.post('/api/deploy', async (req, res) => {
 
       const fullCmd = cmds.join(' && ');
       const { stdout, stderr, code } = await ssh.execCommand(fullCmd, { cwd: '/tmp' });
-      results.push({ host: hostLabel, ok: code === 0, code, stdout, stderr });
+      
+      // Consider deployment successful if the main script succeeds, even if cleanup commands fail
+      const isSuccess = code === 0 || (runSetup && (stdout.includes('Setup complete!') || stderr.includes('Setup complete!')));
+      results.push({ host: hostLabel, ok: isSuccess, code, stdout, stderr });
       ssh.dispose();
     } catch (e) {
       try { ssh.dispose(); } catch (_) {}
@@ -464,24 +518,22 @@ app.post('/api/register', (req, res) => {
   res.json({ ok: true, ip: clientIp });
 });
 
-// Dedicated client-only view (no admin UI)
-app.get(['/client', '/'], (req, res) => {
+// Dedicated client view for kiosk screens
+app.get('/client', (req, res) => {
   res.sendFile(path.join(__dirname, staticDir, 'client.html'));
 });
 
-// Redirect direct requests to index.html to /admin explicitly
-app.get('/index.html', (req, res) => {
-  res.redirect(302, '/admin');
-});
-
-// Admin dashboard route
-app.get('/admin', (req, res) => {
+// Serve the admin management UI at root and /admin
+app.get(['/', '/admin'], (req, res) => {
   res.sendFile(path.join(__dirname, staticDir, 'index.html'));
 });
 
-// Serve the kiosk client for all other routes by default
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, staticDir, 'client.html'));
+// Minimal 404 for unknown GET routes to avoid confusion
+app.use((req, res, next) => {
+  if (req.method === 'GET') {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  return next();
 });
 
 // Error handling

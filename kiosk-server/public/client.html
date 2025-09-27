@@ -6,8 +6,24 @@
     <meta http-equiv="X-UA-Compatible" content="ie=edge">
     <title>Kiosk Client</title>
     <style>
-        body { margin: 0; overflow: hidden; }
-        iframe { border: none; width: 100vw; height: 100vh; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { 
+            margin: 0; 
+            padding: 0; 
+            overflow: hidden; 
+            width: 100vw; 
+            height: 100vh; 
+            background: #000;
+        }
+        iframe { 
+            border: none; 
+            width: 100vw; 
+            height: 100vh; 
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
         #embed-error {
             position: fixed;
             inset: 0;
