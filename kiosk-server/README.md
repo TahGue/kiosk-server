@@ -10,10 +10,11 @@ A simple kiosk server built with Node.js and Express. This application provides 
 - **Server Time Synchronization**: Periodically syncs time with the server.
 - **Responsive Design**: Adapts to different screen sizes.
 - **Basic Security Measures**: Options to disable context menus and shortcuts in kiosk mode.
-- **Network Device Scanning**: Discover devices on the local network from the admin panel.
+- **Advanced Network Device Scanning**: Comprehensive multi-method device discovery with OS detection, service identification, and MAC vendor lookup.
 - **Persistent Configuration**: URL changes are saved to disk and survive server restarts.
 - **Client URL Update Handling**: Kiosk clients check for URL changes periodically and update when a new URL is set.
-- **Client Connection Tracking**: Clients notify the server when connected, providing IP, user agent, and current URL.
+- **Client Heartbeat and Remote Control**: Bash/PowerShell clients can send heartbeats to the server, appear as 'online' in the UI, and receive commands like `reboot` or `update_url`.
+- **Remote Deployment and Restart**: Deploy the client script and restart kiosk devices directly from the admin UI via SSH.
 - **Per-IP URL Configuration**: Set specific URLs for individual client IPs from the admin panel.
 
 ## Prerequisites
@@ -78,12 +79,56 @@ Notes:
 - Packages are served as static files by Express from `public/repo/`.
 - Keep your `.deb` set aligned with client distro version for best compatibility.
 
+## Heartbeat and Remote Control
+
+The server includes a heartbeat system for monitoring and controlling non-browser clients (like simple bash or PowerShell scripts).
+
+### Heartbeat API
+
+- **`POST /api/heartbeat`**: A client sends a JSON payload with its status (`id`, `hostname`, `version`, `status`, `currentUrl`). The server registers the client and responds with any queued commands.
+- **`GET /api/heartbeat/clients`**: Returns a list of all registered heartbeat clients, including their online status.
+- **`POST /api/heartbeat/command`**: Queues a command for a specific client. Requires a payload like `{ "target": "client-key", "type": "reboot", "payload": {} }`.
+
+### Heartbeat UI
+
+The admin dashboard now includes a **Heartbeat Clients** panel where you can:
+- See a list of all registered clients and their online status.
+- Send commands (`reboot`, `update_url`) to a specific client.
+
+## Client Management and Deployment
+
+The admin UI includes panels for deploying scripts and restarting clients via SSH.
+
+- **Deploy to Clients**: Enter SSH credentials and the server's base URL to push the `start-kiosk.sh` script to multiple clients, set it up as a service, and optionally reboot them.
+- **Restart Clients**: Remotely reboot a group of clients using SSH credentials.
+
 ## Usage
 
 - **Admin Interface**: Access the admin panel at `http://localhost:4000` (or the IP address of your server machine) to change the kiosk URL and manage settings.
   - Enter a new URL in the "Control Panel" and click "Switch URL" or press Enter.
   - In the "Connected Devices" panel, see client IPs, user agents, and current URLs; click "Set URL" to assign a specific URL to a client IP.
-- **Kiosk Client**: Run the client script on a dedicated display machine (e.g., Linux Mint):
+- **Kiosk Client (Linux)**: The `kiosk-client/start-kiosk.sh` script is designed for Linux (Debian/Ubuntu/Mint). It now includes a heartbeat function to report status and receive commands.
+  - **Setup**: Run with `sudo ./start-kiosk.sh` once to create a 'student' user, enable autologin, and install necessary packages (`jq`, browsers).
+  - **Run**: After setup, the system will automatically log in and start the kiosk. To run manually, execute `./start-kiosk.sh` as a regular user.
+
+- **Kiosk Client (Windows/Other OS)**: You can use a simple PowerShell or bash script to interact with the heartbeat system.
+
+  **PowerShell Example:**
+  ```powershell
+  $SERVER_BASE = "http://<YOUR_SERVER_IP>:4000"
+  while ($true) {
+    $payload = @{
+      id = "$env:COMPUTERNAME"
+      hostname = "$env:COMPUTERNAME"
+      version = "ps-client-1.0"
+      status = "ok"
+    } | ConvertTo-Json
+    try {
+      Invoke-RestMethod -Uri "$SERVER_BASE/api/heartbeat" -Method Post -Body $payload -ContentType "application/json"
+    } catch {}
+    Start-Sleep -Seconds 60
+  }
+  ```
   - Copy the `kiosk-client/start-kiosk.sh` script to your client machine.
   - If run with `sudo`, it sets up a 'student' user with no password and autologin, configuring the system to boot into kiosk mode.
   - If run as a regular user, it starts the kiosk browser in full-screen mode with the specified URL.
@@ -109,11 +154,74 @@ Notes:
   - `DISABLE_CONTEXT_MENU` and `DISABLE_SHORTCUTS`: Security flags for kiosk mode
 - **Persisted Config**: URL changes made from the admin panel are saved to `kiosk-server/config/kiosk-config.json`.
 
+## Network Scanning Features
+
+The server includes comprehensive network device discovery capabilities using multiple scanning methods:
+
+### Scanning Methods
+
+1. **Bonjour/mDNS Discovery**: Fast discovery of devices advertising services (printers, media devices, etc.) with friendly names
+2. **ARP Table Scanning**: Quick MAC address and IP discovery using system ARP cache or node-arp library
+3. **Nmap Scanning**: Advanced scanning with OS detection, service identification, and port scanning
+4. **MAC Vendor Lookup**: Comprehensive OUI database for identifying device manufacturers
+
+### Scan Modes
+
+Access the scan API at `/api/lan/scan?mode=<mode>`:
+
+- **Fast Mode** (default): Quick scan using Bonjour, ARP, and basic nmap ping scan (3-5 seconds)
+  ```
+  GET /api/lan/scan?mode=fast
+  ```
+
+- **Detailed Mode**: Adds OS detection and common port scanning (10-30 seconds)
+  ```
+  GET /api/lan/scan?mode=detailed
+  ```
+
+- **Aggressive Mode**: Full OS detection, service version detection, and port scanning 1-1000 (30-120 seconds)
+  ```
+  GET /api/lan/scan?mode=aggressive
+  ```
+
+### Device Information Gathered
+
+Depending on scan mode and device type, the scan returns:
+
+- **IP Address**: IPv4 address of the device
+- **MAC Address**: Physical hardware address
+- **Hostname**: Device network name
+- **Vendor**: Manufacturer identified from MAC address OUI
+- **Device Type**: Automatically identified (Windows PC, Linux Server, Printer, Router, etc.)
+- **Operating System**: OS name and detection accuracy (detailed/aggressive modes)
+- **Open Ports**: List of accessible ports with service names and versions
+- **Services**: Bonjour/mDNS advertised services (AirPlay, SMB, HTTP, etc.)
+- **Scan Sources**: Which methods successfully detected the device
+
+### Single Device Scan
+
+For detailed information about a specific IP:
+
+```
+GET /api/lan/scan/192.168.1.100
+```
+
+This performs a comprehensive scan of the single device including OS detection, port scanning, and service identification.
+
+### Custom Subnet and Ports
+
+Specify custom subnet or port ranges:
+
+```
+GET /api/lan/scan?mode=detailed&subnet=192.168.1.0/24&ports=22,80,443,3389
+```
+
 ## Troubleshooting
 
 - **Can't Type in Admin Input Field**: Hard refresh the page (`Ctrl+Shift+R`) to load the latest scripts. If the issue persists, check the browser console for errors (right-click > Inspect > Console).
 - **Kiosk Client Not Updating URL**: Ensure the client script is the latest version with polling logic. Verify the client can reach the server at `http://<server-ip>:4000/api/config`. Stop and restart the script (`Ctrl+C`, then `./start-kiosk.sh`). If needed, kill the browser (`pkill -f google-chrome`) to force a relaunch with the new URL.
-- **LAN Scan Returns Few/No Devices**: Run the scan again after a minute or interact with your LAN (e.g., browse to your router page) to populate the ARP table.
+- **LAN Scan Returns Few/No Devices**: Try using detailed or aggressive scan mode. Ensure nmap is installed on the server (`npm install` should handle node-nmap). For best results, run the server with appropriate network permissions.
+- **Nmap Requires Root/Admin**: Some nmap features (OS detection) require elevated privileges. Run the server with `sudo` on Linux or as Administrator on Windows for full functionality.
 - **Can't Exit Kiosk Mode**: Follow the steps in 'Exiting Kiosk Mode' above. If stuck, force a reboot by holding the power button, then boot into recovery mode to disable autologin.
 
 ## License

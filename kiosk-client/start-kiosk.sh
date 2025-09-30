@@ -142,11 +142,20 @@ if [[ "$(id -u)" -eq 0 ]]; then
      echo "[+] A browser is already installed. Skipping install."
    else
      echo "[!] No browser found. Attempting offline-friendly install of firefox or midori via local repo if available..."
-     apt-get update || true
-     apt-get install -y firefox || apt-get install -y midori || true
+     DEBIAN_FRONTEND=noninteractive apt-get update || true
+     DEBIAN_FRONTEND=noninteractive apt-get install -y firefox || DEBIAN_FRONTEND=noninteractive apt-get install -y midori || true
      if ! command -v firefox >/dev/null 2>&1 && ! command -v midori >/dev/null 2>&1; then
-       echo "[!] Could not install Firefox/Midori automatically. If offline, copy .deb packages via USB and run: dpkg -i <package>.deb; apt-get -f install"
+       echo "[!] Could not install Firefox/Midori automatically. If offline, copy .deb packages via USB and run: dpkg -i <package>.deb; DEBIAN_FRONTEND=noninteractive apt-get -f install"
      fi
+   fi
+
+   # --- 1.5 Install Utilities (jq for command parsing) ---
+   echo "[+] Checking for jq..."
+   if ! command_exists jq; then
+     echo "[+] Installing jq..."
+     DEBIAN_FRONTEND=noninteractive apt-get install -y jq || true
+   else
+     echo "[+] jq is already installed."
    fi
 
    # --- 2. Create Kiosk User ---
@@ -236,7 +245,7 @@ EOL
    chmod +x /usr/local/bin/kiosk-session.sh
 
    # --- 3.0 Install xbindkeys and set keybinding (Ctrl+Alt+S -> switch user) ---
-   apt-get install -y xbindkeys >/dev/null 2>&1 || true
+   DEBIAN_FRONTEND=noninteractive apt-get install -y xbindkeys >/dev/null 2>&1 || true
    su - student -c 'cat > ~/.xbindkeysrc << "XBCFG" 
 "dm-tool switch-to-greeter"
   Control+Alt + s
@@ -253,8 +262,8 @@ XBCFG
    SSH_PASSWORD_AUTH_VAL=${SSH_PASSWORD_AUTH:-no}
    if [[ "${SSH_ENABLE}" == "true" ]]; then
      echo "[+] Installing and enabling OpenSSH server..."
-     apt-get update || true
-     apt-get install -y openssh-server || true
+     DEBIAN_FRONTEND=noninteractive apt-get update || true
+     DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server || true
      { systemctl enable ssh || systemctl enable sshd; } 2>&1 || true
      { systemctl start ssh || systemctl start sshd; } 2>&1 || true
 
@@ -336,7 +345,7 @@ EOL
         curl -fsS --connect-timeout 2 --max-time 4 "$SERVER_BASE/repo/Packages" >/dev/null 2>&1; then
        echo "[+] Adding local repo: $SERVER_BASE/repo"
        echo "deb [trusted=yes] $SERVER_BASE/repo ./" > /etc/apt/sources.list.d/kiosk-local.list
-       apt-get update || true
+       DEBIAN_FRONTEND=noninteractive apt-get update || true
      else
        echo "[i] Local repo index not found at $SERVER_BASE/repo. Prepare it with kiosk-server/scripts/prepare-offline-repo.sh"
      fi
@@ -349,11 +358,11 @@ EOL
    if command_exists lspci; then
      if lspci | grep -qi 'nvidia'; then
        echo "[i] NVIDIA detected: consider installing nvidia-driver-340 or appropriate legacy package if available in local repo."
-       apt-get install -y nvidia-driver-340 || true
+       DEBIAN_FRONTEND=noninteractive apt-get install -y nvidia-driver-340 || true
      fi
      if lspci | grep -qi 'broadcom'; then
        echo "[i] Broadcom detected: attempting bcmwl-kernel-source from local repo."
-       apt-get install -y bcmwl-kernel-source || apt-get install -y firmware-b43-installer || true
+       DEBIAN_FRONTEND=noninteractive apt-get install -y bcmwl-kernel-source || DEBIAN_FRONTEND=noninteractive apt-get install -y firmware-b43-installer || true
      fi
    fi
 
@@ -455,7 +464,7 @@ fi
 # Ensure curl is available to fetch config
 if ! command_exists "curl"; then
   log "curl not found. Attempting to install (offline-friendly)..."
-  sudo apt-get update && sudo apt-get install -y curl || true
+  sudo DEBIAN_FRONTEND=noninteractive apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y curl || true
   if ! command_exists curl; then
     log "WARN: curl still not available; network fetches may fail."
   fi
@@ -488,6 +497,64 @@ load_last_url() {
     cat "$LAST_URL_FILE"
   else
     echo ""
+  fi
+}
+
+# Send heartbeat and process commands
+send_heartbeat() {
+  if [[ -z "$ACTIVE_SERVER" ]]; then return 1; fi
+  local id hostname version status current_url payload resp commands count
+  id="$(hostname)-$(cat /etc/machine-id 2>/dev/null || echo unknown)"
+  hostname="$(hostname)"
+  version="kiosk-client-1.1.0"
+  status="ok"
+  current_url="$KIOSK_URL_RUNNING"
+
+  payload=$(cat <<EOF
+{
+  "id": "$id",
+  "hostname": "$hostname",
+  "version": "$version",
+  "status": "$status",
+  "currentUrl": "$current_url"
+}
+EOF
+)
+
+  resp=$(curl -fsS -X POST "$ACTIVE_SERVER/api/heartbeat" \
+    -H 'Content-Type: application/json' \
+    -d "$payload") || return 1
+
+  if command_exists jq; then
+    commands=$(echo "$resp" | jq -c '.commands // []')
+    count=$(echo "$commands" | jq 'length')
+    if [[ "$count" -gt 0 ]]; then
+      log "Received $count command(s) from server."
+      for i in $(seq 0 $((count - 1))); do
+        cmd=$(echo "$commands" | jq -r ".[$i]")
+        type=$(echo "$cmd" | jq -r '.type')
+        payload=$(echo "$cmd" | jq -c '.payload')
+        log "Executing command: $type with payload: $payload"
+        case "$type" in
+          reboot)
+            log "Reboot command received. Rebooting now..."
+            sudo reboot
+            ;;
+          update_url)
+            new_url=$(echo "$payload" | jq -r '.url')
+            if [[ -n "$new_url" ]]; then
+              log "URL update command received: $new_url"
+              KIOSK_URL_RUNNING="$new_url"
+              save_last_url "$new_url"
+              if is_running; then kill "$BROWSER_PID" 2>/dev/null; fi
+            fi
+            ;;
+          *)
+            log "Unknown command type: $type"
+            ;;
+        esac
+      done
+    fi
   fi
 }
 
@@ -551,24 +618,28 @@ fi
 
 # Monitor for changes and process health
 while true; do
-  sleep 10
+  # Send heartbeat and check for commands
+  send_heartbeat || log "Heartbeat failed. Server may be down."
+
+  # Check for URL changes from server (unless a command handled it)
   prev_server="$ACTIVE_SERVER"
   ACTIVE_SERVER=$(choose_server) || true
   if [[ -z "$ACTIVE_SERVER" ]]; then
     NEW_URL="file://$OFFLINE_PAGE"
     if [[ "$KIOSK_URL_RUNNING" != "$NEW_URL" ]]; then
-      log "Both servers unreachable. Switching to offline page."
+      log "All servers unreachable. Switching to offline page."
+      KIOSK_URL_RUNNING="$NEW_URL"
     fi
   else
     if [[ "$ACTIVE_SERVER" != "$prev_server" ]]; then
       log "Server switched: $prev_server -> $ACTIVE_SERVER"
     fi
-    # Get latest URL from server with active endpoint
+    # Get latest URL from server's config endpoint
     NEW_URL=$(fetch_kiosk_url)
   fi
 
   if [[ -n "$NEW_URL" && "$NEW_URL" != "$KIOSK_URL_RUNNING" ]]; then
-    log "Detected kioskUrl change -> $NEW_URL"
+    log "Detected kioskUrl change via polling -> $NEW_URL"
     KIOSK_URL_RUNNING="$NEW_URL"
     save_last_url "$NEW_URL"
     if is_running; then
@@ -576,32 +647,13 @@ while true; do
       kill "$BROWSER_PID" 2>/dev/null || true
       wait "$BROWSER_PID" 2>/dev/null || true
     fi
-    launch_browser
-    continue
   fi
 
-  # Resource monitoring: if RAM usage >90% and Midori exists, switch to Midori
-  if command_exists free && command_exists awk; then
-    read -r _ total used freebuf shared buff cache avail < <(free -m | awk 'NR==2{print $1,$2,$3,$4,$5,$6,$7}')
-    if [[ -n "$total" && -n "$avail" ]]; then
-      used_pct=$(( ( (total - avail) * 100 ) / total ))
-      if (( used_pct > 90 )) && command_exists midori && [[ "$BROWSER_EXECUTABLE" != "midori" ]]; then
-        log "High memory usage (${used_pct}%). Switching to Midori for lighter footprint."
-        BROWSER_EXECUTABLE="midori"
-        BROWSER_ARGS="-e Fullscreen=1"
-        if is_running; then
-          kill "$BROWSER_PID" 2>/dev/null || true
-          wait "$BROWSER_PID" 2>/dev/null || true
-        fi
-        launch_browser
-        continue
-      fi
-    fi
-  fi
-
-  # Relaunch if the browser crashed/closed
+  # Relaunch if the browser crashed/closed for any reason
   if ! is_running; then
     log "Browser not running. Relaunching..."
     launch_browser
   fi
+
+  sleep 15 # Main loop interval
 done

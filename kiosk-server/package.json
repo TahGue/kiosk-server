@@ -8,11 +8,15 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
+    "bonjour": "^3.5.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "express": "^4.18.2",
     "express-sslify": "^1.2.0",
-    "node-ssh": "^13.1.0"
+    "node-arp": "^1.0.6",
+    "node-nmap": "^4.0.0",
+    "node-ssh": "^13.1.0",
+    "oui": "^12.0.61"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"

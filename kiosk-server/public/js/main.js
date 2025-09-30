@@ -223,23 +223,40 @@ function initKiosk() {
 
     async function fetchAndRenderDevices() {
         try {
-            const devices = await getJson('/api/devices');
-            if (!Array.isArray(devices)) throw new Error('Invalid response');
+            const [sseDevices, hbClients] = await Promise.all([
+                getJson('/api/devices'),
+                getJson('/api/heartbeat/clients').catch(() => [])
+            ]);
 
-            if (devices.length === 0) {
+            const isValidArray = (arr) => Array.isArray(arr);
+            const sse = isValidArray(sseDevices) ? sseDevices : [];
+            const hb = isValidArray(hbClients) ? hbClients : [];
+
+            if (sse.length === 0 && hb.length === 0) {
                 devicesListEl.innerHTML = '<p>No devices are currently connected.</p>';
                 return;
             }
 
-            devicesListEl.innerHTML = devices.map(device => `
+            const sseHtml = sse.map(device => `
                 <div class="device-item">
-                    <div class="device-id">ID: ${device.id.substring(0, 8)}...</div>
+                    <div class="device-id">[SSE] ID: ${device.id.substring(0, 8)}...</div>
                     <div class="device-ip">IP: ${device.ip}</div>
-                    <div class="device-agent">Agent: ${device.userAgent.substring(0, 40)}...</div>
+                    <div class="device-agent">Agent: ${device.userAgent.substring(0, 60)}...</div>
                     <div class="device-url">URL: ${device.currentUrl || 'Unknown'}</div>
                     <div class="device-action"><button onclick="setUrlForIp('${device.ip}')">Set URL</button></div>
                 </div>
             `).join('');
+
+            const hbHtml = hb.map(c => `
+                <div class="device-item">
+                    <div class="device-id">[HB] ${c.key} ${c.online ? '<span style="color:#4caf50; margin-left:6px;">● online</span>' : '<span style="color:#999; margin-left:6px;">● offline</span>'}</div>
+                    <div class="device-ip">IP: ${c.ip || '-'}</div>
+                    <div class="device-agent">Host: ${c.hostname || '-'} | Ver: ${c.version || '-'}</div>
+                    <div class="device-url">URL: ${c.currentUrl || 'Unknown'}</div>
+                </div>
+            `).join('');
+
+            devicesListEl.innerHTML = sseHtml + hbHtml;
         } catch (error) {
             if (error.message.includes('401')) {
                 devicesListEl.innerHTML = `<p class="error">Authorization failed. Is the Admin Token correct?</p>`;
@@ -294,6 +311,9 @@ function initKiosk() {
     const btnShowIfaces = document.getElementById('btn-show-interfaces');
     const lanResultsEl = document.getElementById('lan-results');
     const lanIfacesEl = document.getElementById('lan-interfaces');
+    const inputScanMode = document.getElementById('scan-mode');
+    const inputScanSubnet = document.getElementById('scan-subnet');
+    const inputScanPorts = document.getElementById('scan-ports');
 
     async function renderInterfaces() {
         if (!lanIfacesEl) return;
@@ -317,23 +337,92 @@ function initKiosk() {
         }
     }
 
+    function buildScanUrl() {
+        const params = new URLSearchParams();
+        const mode = inputScanMode?.value || 'fast';
+        if (mode) params.set('mode', mode);
+        const subnet = (inputScanSubnet?.value || '').trim();
+        if (subnet) params.set('subnet', subnet);
+        const ports = (inputScanPorts?.value || '').trim();
+        if (ports) params.set('ports', ports);
+        return `/api/lan/scan?${params.toString()}`;
+    }
+
     async function scanLan() {
         if (!lanResultsEl) return;
         lanResultsEl.innerHTML = '<p>Scanning network... this may take a few seconds.</p>';
         try {
-            const res = await getJson('/api/lan/scan');
-            const devices = Array.isArray(res.devices) ? res.devices : [];
+            // Fetch both network scan and connected devices
+            const [scanRes, connectedDevices] = await Promise.all([
+                getJson(buildScanUrl()),
+                getJson('/api/devices').catch(() => [])
+            ]);
+            
+            const devices = Array.isArray(scanRes.devices) ? scanRes.devices : [];
             if (devices.length === 0) {
                 lanResultsEl.innerHTML = '<p>No devices discovered.</p>';
                 return;
             }
-            lanResultsEl.innerHTML = devices.map(d => `
-                <div class="device-item">
-                    <div class="device-id">${(d.name || 'Unknown').toString()}</div>
-                    <div class="device-ip">IP: ${d.ip || '-'}</div>
-                    <div class="device-agent">MAC: ${d.mac || '-'}</div>
+
+            // Create a Set of IPs that have active client connections
+            const connectedIPs = new Set(
+                Array.isArray(connectedDevices) 
+                    ? connectedDevices.map(d => d.ip) 
+                    : []
+            );
+
+            // Add scan summary header
+            const scanMode = scanRes.scanMode || 'fast';
+            const scanTime = scanRes.scanTime ? `${scanRes.scanTime}ms` : 'N/A';
+            const methods = scanRes.methods ? scanRes.methods.join(', ') : 'unknown';
+            const summaryHtml = `
+                <div style="background: #f5f5f5; padding: 10px; margin-bottom: 15px; border-radius: 4px; font-size: 0.9em;">
+                    <strong>Scan Results:</strong> ${devices.length} device(s) found in ${scanTime} using ${methods}
+                    <span style="margin-left: 15px; color: #666;">(Mode: ${scanMode})</span>
                 </div>
-            `).join('');
+            `;
+
+            // Render devices with status indicators
+            lanResultsEl.innerHTML = summaryHtml + devices.map(d => {
+                const isConnected = connectedIPs.has(d.ip);
+                const statusClass = isConnected ? 'connected' : 'disconnected';
+                const statusText = isConnected ? 'Client Active' : 'No Client';
+                const statusLabel = isConnected ? '<span style="color: #4caf50; font-weight: bold; margin-left: 10px;">✓ KIOSK ACTIVE</span>' : '';
+                const vendor = d.vendor || 'Unknown Vendor';
+                
+                // Determine display name (prefer hostname over vendor)
+                let displayName = vendor;
+                if (d.hostname) {
+                    displayName = d.hostname;
+                } else if (d.name && d.name !== 'Unknown Vendor' && d.name !== 'Unknown Device') {
+                    displayName = d.name;
+                }
+                
+                const deviceType = d.deviceType && d.deviceType !== 'Unknown' ? ` (${d.deviceType})` : '';
+                const hostnameInfo = d.hostname ? `<div class="device-hostname" style="font-size: 0.9em; color: #2196F3; margin-top: 3px;">🖥️ ${d.hostname}</div>` : '';
+                const vendorInfo = d.vendor && d.vendor !== 'Unknown Vendor' ? `<div class="device-vendor" style="font-size: 0.85em; color: #666; margin-top: 2px;">Vendor: ${d.vendor}</div>` : '';
+                const osInfo = d.os ? `<div class="device-os" style="font-size: 0.85em; color:#444;">OS: ${d.os}${d.osAccuracy ? ` (${d.osAccuracy}%)` : ''}</div>` : '';
+                const ports = Array.isArray(d.ports) && d.ports.length > 0
+                    ? `<div class="device-ports" style="font-size:0.85em; color:#555; margin-top:2px;">Ports: ${d.ports.slice(0,8).map(p => `${p.port}/${p.protocol}${p.service?` (${p.service})`:''}`).join(', ')}${d.ports.length>8?' …':''}</div>`
+                    : '';
+                const services = Array.isArray(d.services) && d.services.length > 0
+                    ? `<div class="device-services" style="font-size:0.85em; color:#555; margin-top:2px;">Services: ${d.services.slice(0,6).map(s => s.type || s.name).join(', ')}${d.services.length>6?' …':''}</div>`
+                    : '';
+                
+                return `
+                    <div class="device-item">
+                        <div class="device-status ${statusClass}" title="${statusText}"></div>
+                        <div class="device-id"><strong>${displayName}${deviceType}</strong></div>
+                        ${hostnameInfo}
+                        <div class="device-ip">IP: ${d.ip || '-'}${statusLabel}</div>
+                        <div class="device-agent">MAC: ${d.mac || '-'}</div>
+                        ${vendorInfo}
+                        ${osInfo}
+                        ${ports}
+                        ${services}
+                    </div>
+                `;
+            }).join('');
         } catch (err) {
             if (err.message.includes('501')) {
                 lanResultsEl.innerHTML = '<p class="error">LAN scan is not available. Install dependencies on the server.</p>';
@@ -345,6 +434,9 @@ function initKiosk() {
 
     btnShowIfaces?.addEventListener('click', renderInterfaces);
     btnScanLan?.addEventListener('click', scanLan);
+
+    // Automatically scan the network on page load for convenience
+    scanLan();
 
     // Open current URL in new tab
     const btnOpenUrl = document.getElementById('btn-open-url');
@@ -467,6 +559,65 @@ function initKiosk() {
     }
 
     btnRestart?.addEventListener('click', restartClients);
+
+    // Heartbeat panel wiring
+    const hbListEl = document.getElementById('hb-list');
+    const hbRefreshBtn = document.getElementById('btn-refresh-hb');
+    const hbTarget = document.getElementById('hb-target');
+    const hbCmdType = document.getElementById('hb-cmd-type');
+    const hbCmdPayload = document.getElementById('hb-cmd-payload');
+    const hbSendBtn = document.getElementById('btn-send-hb-cmd');
+    const hbResult = document.getElementById('hb-result');
+
+    async function fetchHeartbeatClients() {
+        if (!hbListEl) return;
+        hbListEl.innerHTML = '<p>Loading...</p>';
+        try {
+            const clients = await getJson('/api/heartbeat/clients');
+            if (!Array.isArray(clients) || clients.length === 0) {
+                hbListEl.innerHTML = '<p>No heartbeat clients.</p>';
+                return;
+            }
+            hbListEl.innerHTML = clients.map(c => `
+                <div class="device-item">
+                    <div class="device-id"><strong>${c.key}</strong> ${c.online ? '<span style="color:#4caf50; margin-left:6px;">● online</span>' : '<span style="color:#999; margin-left:6px;">● offline</span>'}</div>
+                    <div class="device-ip">IP: ${c.ip || '-'}</div>
+                    <div class="device-agent">Host: ${c.hostname || '-'} | Ver: ${c.version || '-'}</div>
+                    <div class="device-agent">Status: ${c.status || '-'}${c.currentUrl ? ` | URL: ${c.currentUrl}` : ''}</div>
+                    <div class="device-agent">Last Seen: ${c.lastSeen || '-'}</div>
+                </div>
+            `).join('');
+        } catch (err) {
+            hbListEl.innerHTML = `<p class="error">Failed to load heartbeat clients: ${err.message}</p>`;
+        }
+    }
+
+    async function sendHeartbeatCommand() {
+        if (!hbSendBtn) return;
+        const target = (hbTarget?.value || '').trim();
+        const type = (hbCmdType?.value || '').trim();
+        const payloadRaw = (hbCmdPayload?.value || '').trim();
+        if (!target || !type) { alert('Target and command type are required'); return; }
+        let payload = {};
+        if (payloadRaw) {
+            try { payload = JSON.parse(payloadRaw); } catch (e) { alert('Payload must be valid JSON'); return; }
+        }
+        hbSendBtn.disabled = true;
+        if (hbResult) { hbResult.style.display = 'block'; hbResult.textContent = 'Sending...'; }
+        try {
+            const resp = await postJson('/api/heartbeat/command', { target, type, payload });
+            if (hbResult) hbResult.textContent = `Queued. Total queued: ${resp.queued}`;
+        } catch (err) {
+            if (hbResult) hbResult.textContent = `Failed: ${err.message}`;
+        } finally {
+            hbSendBtn.disabled = false;
+        }
+    }
+
+    hbRefreshBtn?.addEventListener('click', fetchHeartbeatClients);
+    hbSendBtn?.addEventListener('click', sendHeartbeatCommand);
+    // Initial load
+    fetchHeartbeatClients();
 }
 
 // Start the kiosk when the DOM is fully loaded

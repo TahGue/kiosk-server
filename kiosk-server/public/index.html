@@ -22,6 +22,25 @@
                     <button id="btn-apply-url">Switch URL</button>
                 </div>
 
+            <div class="content-panel" id="hb-panel">
+                <div class="panel-header">
+                    <h2>Heartbeat Clients</h2>
+                    <div class="panel-actions">
+                        <button id="btn-refresh-hb">Refresh</button>
+                    </div>
+                </div>
+                <div class="admin-row" style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center;">
+                    <input id="hb-target" type="text" placeholder="Target key (id or IP)" style="min-width:240px;" />
+                    <input id="hb-cmd-type" type="text" placeholder="Command type (e.g., reboot, update)" style="min-width:220px;" />
+                    <input id="hb-cmd-payload" type="text" placeholder='Payload JSON (e.g., {"url":"..."})' style="min-width:320px; flex:1;" />
+                    <button id="btn-send-hb-cmd">Send Command</button>
+                </div>
+                <div id="hb-list" class="devices-list-container">
+                    <p>No heartbeat clients yet.</p>
+                </div>
+                <div id="hb-result" class="info-box" style="display:none; margin-top:0.5rem;"></div>
+            </div>
+
             <div class="content-panel" id="deploy-panel">
                 <div class="panel-header">
                     <h2>Deploy to Clients</h2>
@@ -92,6 +111,14 @@
                 <div class="panel-header">
                     <h2>Network Devices</h2>
                     <div class="panel-actions">
+                        <label for="scan-mode" style="margin-right:6px;">Mode</label>
+                        <select id="scan-mode" style="margin-right:10px;">
+                            <option value="fast" selected>Fast</option>
+                            <option value="detailed">Detailed</option>
+                            <option value="aggressive">Aggressive</option>
+                        </select>
+                        <input id="scan-subnet" type="text" placeholder="Subnet (e.g., 192.168.0.0/24)" style="min-width:220px; margin-right:8px;" />
+                        <input id="scan-ports" type="text" placeholder="Ports (e.g., 22,80,443 or 1-1000)" style="min-width:220px; margin-right:8px;" />
                         <button id="btn-show-interfaces">Interfaces</button>
                         <button id="btn-scan-lan">Scan Network</button>
                     </div>

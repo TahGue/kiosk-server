@@ -1,0 +1,11 @@
+{
+  "tahar-HP-EliteBook-840-G1-8483625bb4234be58ad99711e7572647": {
+    "id": "tahar-HP-EliteBook-840-G1-8483625bb4234be58ad99711e7572647",
+    "ip": "192.168.0.122",
+    "hostname": "tahar-HP-EliteBook-840-G1",
+    "version": "kiosk-client-1.1.0",
+    "status": "ok",
+    "currentUrl": "www.mgstadorent.se",
+    "lastSeen": "2025-09-30T06:17:49.390Z"
+  }
+}

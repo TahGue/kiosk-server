@@ -6,9 +6,18 @@ const cors = require('cors');
 const { exec } = require('child_process');
 const os = require('os');
 const fs = require('fs');
+const dns = require('dns').promises;
 const { NodeSSH } = require('node-ssh');
 let findLocalDevices;
 try { findLocalDevices = require('local-devices'); } catch (_) { findLocalDevices = null; }
+let nmap;
+try { nmap = require('node-nmap'); } catch (_) { nmap = null; }
+let bonjour;
+try { bonjour = require('bonjour')(); } catch (_) { bonjour = null; }
+let oui;
+try { oui = require('oui'); } catch (_) { oui = null; }
+let arp;
+try { arp = require('node-arp'); } catch (_) { arp = null; }
 require('dotenv').config();
 
 const app = express();
@@ -34,6 +43,7 @@ if (process.env.NODE_ENV === 'production' || forceHttps) {
 // Config persistence helpers
 const CONFIG_DIR = path.join(__dirname, 'config');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'kiosk-config.json');
+const HEARTBEAT_FILE = path.join(CONFIG_DIR, 'heartbeat-clients.json');
 
 function ensureConfigDir() {
   try { fs.mkdirSync(CONFIG_DIR, { recursive: true }); } catch (_) {}
@@ -80,6 +90,34 @@ const sseClients = new Map(); // Use a Map to store more client data
 const clientSpecificConfigs = new Map();
 const CLIENT_CONFIG_FILE = path.join(CONFIG_DIR, 'client-configs.json');
 
+// Heartbeat registry (bash clients)
+const heartbeatClients = new Map(); // key: id_or_ip -> { id, ip, hostname, version, status, tags, metrics, lastSeen }
+const heartbeatCommands = new Map(); // key: id_or_ip -> [ { type, payload, createdAt } ]
+
+function loadHeartbeatFromDisk() {
+  try {
+    if (fs.existsSync(HEARTBEAT_FILE)) {
+      const raw = fs.readFileSync(HEARTBEAT_FILE, 'utf8');
+      const obj = JSON.parse(raw);
+      for (const [k, v] of Object.entries(obj)) {
+        heartbeatClients.set(k, v);
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to load heartbeat registry:', e.message || e);
+  }
+}
+
+function saveHeartbeatToDisk() {
+  try {
+    ensureConfigDir();
+    const obj = Object.fromEntries(heartbeatClients);
+    fs.writeFileSync(HEARTBEAT_FILE, JSON.stringify(obj, null, 2), 'utf8');
+  } catch (e) {
+    console.warn('Failed to persist heartbeat registry:', e.message || e);
+  }
+}
+
 function loadClientConfigsFromDisk() {
   try {
     if (fs.existsSync(CLIENT_CONFIG_FILE)) {
@@ -106,6 +144,8 @@ function saveClientConfigsToDisk() {
 
 // Load client-specific configs on startup
 loadClientConfigsFromDisk();
+// Load heartbeat registry on startup
+loadHeartbeatFromDisk();
 
 function broadcast(event, payload) {
   const data = `event: ${event}\n` +
@@ -121,10 +161,193 @@ app.get('/api/time', (req, res) => {
   res.json({ time: new Date().toISOString() });
 });
 
+// Heartbeat endpoint for bash clients
+// POST /api/heartbeat { id?, hostname?, version?, status?, tags?, metrics?, currentUrl? }
+app.post('/api/heartbeat', (req, res) => {
+  try {
+    const clientIp = normalizeIp(req.ip);
+    const {
+      id,
+      hostname,
+      version,
+      status,
+      tags,
+      metrics,
+      currentUrl
+    } = req.body || {};
+
+    const key = (id && String(id).trim()) || clientIp;
+    const record = heartbeatClients.get(key) || { id: id || null, ip: clientIp };
+    record.id = id || record.id;
+    record.ip = clientIp;
+    if (hostname) record.hostname = hostname;
+    if (version) record.version = version;
+    if (status) record.status = status;
+    if (tags) record.tags = tags;
+    if (metrics) record.metrics = metrics;
+    if (currentUrl) record.currentUrl = currentUrl;
+    record.lastSeen = new Date().toISOString();
+
+    heartbeatClients.set(key, record);
+    saveHeartbeatToDisk();
+
+    // Prepare response: config for this IP and queued commands
+    let clientConfig = kioskConfig;
+    if (clientSpecificConfigs.has(clientIp)) {
+      clientConfig = Object.assign({}, kioskConfig, clientSpecificConfigs.get(clientIp));
+    }
+
+    const queue = heartbeatCommands.get(key) || [];
+    // send and clear queued commands
+    heartbeatCommands.set(key, []);
+
+    res.json({
+      ok: true,
+      time: new Date().toISOString(),
+      config: clientConfig,
+      commands: queue
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+// List heartbeat clients (admin-protected if ADMIN_TOKEN set)
+app.get('/api/heartbeat/clients', (req, res) => {
+  const adminToken = process.env.ADMIN_TOKEN || '';
+  if (adminToken && req.headers['x-admin-token'] !== adminToken) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const now = Date.now();
+  const items = Array.from(heartbeatClients.entries()).map(([key, c]) => {
+    const last = c.lastSeen ? Date.parse(c.lastSeen) : 0;
+    const online = last && (now - last) < 10 * 60 * 1000; // 10 minutes
+    return { key, online, ...c };
+  });
+  res.json(items);
+});
+
+// Queue a command for a heartbeat client
+// POST /api/heartbeat/command { target, type, payload }
+app.post('/api/heartbeat/command', (req, res) => {
+  const adminToken = process.env.ADMIN_TOKEN || '';
+  if (adminToken && req.headers['x-admin-token'] !== adminToken) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const { target, type, payload } = req.body || {};
+  if (!target || !type) return res.status(400).json({ error: 'target and type are required' });
+  const q = heartbeatCommands.get(target) || [];
+  q.push({ type, payload: payload || {}, createdAt: new Date().toISOString() });
+  heartbeatCommands.set(target, q);
+  res.json({ ok: true, queued: q.length });
+});
+
 // --- LAN scanning helpers (fallback via ARP) ---
 function normalizeMac(mac) {
   if (!mac) return '';
   return mac.toLowerCase().replace(/-/g, ':');
+}
+
+// Normalize IPv6-mapped IPv4 addresses to plain IPv4
+function normalizeIp(ip) {
+  if (!ip) return '';
+  // Remove IPv6 prefix if present (::ffff:192.168.0.1 -> 192.168.0.1)
+  if (ip.startsWith('::ffff:')) {
+    return ip.substring(7);
+  }
+  return ip;
+}
+
+// Clean up verbose vendor names from OUI database
+function cleanVendorName(vendor) {
+  if (!vendor) return 'Unknown';
+  
+  // Remove common suffixes and address information
+  let cleaned = vendor
+    .split(/[,\n\r]/)[0]  // Take only first part before comma or newline
+    .trim();
+  
+  // Remove common corporate suffixes
+  cleaned = cleaned
+    .replace(/\s+(Inc\.?|Corp\.?|Corporation|Ltd\.?|Limited|Co\.?,?\s*Ltd\.?|GmbH|S\.A\.?|LLC|L\.L\.C\.|PLC|AG)$/i, '')
+    .replace(/\s+Technologies?$/i, '')
+    .replace(/\s+Electronics?$/i, '')
+    .replace(/\s+International$/i, '')
+    .replace(/\s+Company$/i, '')
+    .trim();
+  
+  // Shorten very long names
+  if (cleaned.length > 30) {
+    cleaned = cleaned.substring(0, 27) + '...';
+  }
+  
+  return cleaned || 'Unknown';
+}
+
+// MAC vendor lookup (OUI prefix to manufacturer name)
+function getMacVendor(mac) {
+  if (!mac) return 'Unknown';
+  
+  // Try using the oui library first for comprehensive lookup
+  if (oui) {
+    try {
+      const vendor = oui(mac);
+      if (vendor) {
+        // Clean up vendor name - extract just the company name
+        return cleanVendorName(vendor);
+      }
+    } catch (e) {
+      // Fallback to manual lookup
+    }
+  }
+  
+  const ouiPrefix = mac.substring(0, 8).toUpperCase();
+  
+  // Common vendors database (OUI prefix) - fallback
+  const vendors = {
+    '00:50:56': 'VMware',
+    '00:0C:29': 'VMware',
+    '00:05:69': 'VMware',
+    '00:1C:42': 'VMware',
+    '08:00:27': 'VirtualBox',
+    '00:15:5D': 'Microsoft (Hyper-V)',
+    '00:03:FF': 'Microsoft',
+    'B0:92:4A': 'D-Link',
+    'E8:DE:27': 'TP-Link',
+    '50:C7:BF': 'TP-Link',
+    'A0:F3:C1': 'TP-Link',
+    '20:28:BC': 'Samsung',
+    '34:CD:BE': 'Samsung',
+    'F8:D0:AC': 'Samsung',
+    '08:D2:3E': 'LG Electronics',
+    '0C:8B:FD': 'Apple',
+    '00:1C:B3': 'Apple',
+    '00:03:93': 'Apple',
+    '40:6C:8F': 'Apple',
+    '98:01:A7': 'Apple',
+    'AC:DE:48': 'Apple',
+    'B8:27:EB': 'Raspberry Pi',
+    'DC:A6:32': 'Raspberry Pi',
+    'E4:5F:01': 'Raspberry Pi',
+    '00:1B:44': 'Intel',
+    '00:13:20': 'Intel',
+    '00:15:17': 'Intel',
+    'D8:9E:F3': 'Intel',
+    '94:C6:91': 'Intel',
+    'A4:BB:6D': 'Intel',
+    '00:50:F2': 'Realtek',
+    '00:E0:4C': 'Realtek',
+    '52:54:00': 'QEMU/KVM',
+    '00:16:3E': 'Xen',
+    '00:1A:4D': 'Cisco',
+    '00:0A:B8': 'Cisco',
+    '00:18:0A': 'Cisco',
+    '88:75:56': 'Huawei',
+    'F0:79:59': 'Huawei',
+    '00:1E:10': 'Huawei'
+  };
+  
+  return vendors[ouiPrefix] || 'Unknown Vendor';
 }
 
 function parseArpTable(text) {
@@ -134,13 +357,24 @@ function parseArpTable(text) {
     // Windows format: "  192.168.0.1          aa-bb-cc-dd-ee-ff     dynamic"
     let m = line.match(/\s*(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F:\-]{11,17})\s+\w+/);
     if (m) {
-      devices.push({ ip: m[1], mac: normalizeMac(m[2]) });
+      const ip = m[1];
+      const mac = normalizeMac(m[2]);
+      
+      // Filter out broadcast, multicast, and invalid addresses
+      if (isValidDeviceAddress(ip, mac)) {
+        devices.push({ ip, mac });
+      }
       continue;
     }
     // Unix format: "? (192.168.0.1) at aa:bb:cc:dd:ee:ff [ether] on en0"
     m = line.match(/\((\d+\.\d+\.\d+\.\d+)\)\s+at\s+([0-9a-fA-F:]{17})/);
     if (m) {
-      devices.push({ ip: m[1], mac: normalizeMac(m[2]) });
+      const ip = m[1];
+      const mac = normalizeMac(m[2]);
+      
+      if (isValidDeviceAddress(ip, mac)) {
+        devices.push({ ip, mac });
+      }
       continue;
     }
   }
@@ -150,20 +384,372 @@ function parseArpTable(text) {
   return Array.from(map.values());
 }
 
-function scanLanViaArp() {
+// Filter out broadcast, multicast, and invalid addresses
+function isValidDeviceAddress(ip, mac) {
+  if (!ip || !mac) return false;
+  
+  // Filter out broadcast MAC addresses
+  if (mac === 'ff:ff:ff:ff:ff:ff') return false;
+  
+  // Filter out multicast MAC addresses (first octet has LSB set)
+  const firstOctet = parseInt(mac.substring(0, 2), 16);
+  if (firstOctet & 0x01) return false; // Multicast bit set
+  
+  // Parse IP address
+  const parts = ip.split('.').map(Number);
+  if (parts.length !== 4 || parts.some(p => isNaN(p) || p < 0 || p > 255)) return false;
+  
+  // Filter out broadcast addresses (x.x.x.255)
+  if (parts[3] === 255) return false;
+  
+  // Filter out network addresses (x.x.x.0)
+  if (parts[3] === 0) return false;
+  
+  // Filter out multicast range (224.0.0.0 - 239.255.255.255)
+  if (parts[0] >= 224 && parts[0] <= 239) return false;
+  
+  // Filter out loopback (127.x.x.x)
+  if (parts[0] === 127) return false;
+  
+  return true;
+}
+
+// In-memory cache for resolved hostnames
+const hostnameCache = new Map();
+
+function cacheHostname(ip, hostname) {
+  if (ip && hostname) {
+    hostnameCache.set(ip, { hostname, timestamp: Date.now() });
+  }
+}
+
+function getCachedHostname(ip) {
+  const entry = hostnameCache.get(ip);
+  if (entry && Date.now() - entry.timestamp < 3600 * 1000) {
+    return entry.hostname;
+  }
+  return null;
+}
+
+// Enhanced hostname resolution with cache and parallel methods
+async function resolveHostname(ip) {
+  const cached = getCachedHostname(ip);
+  if (cached) {
+    console.log(`[HOSTNAME] Cache hit for ${ip}: ${cached}`);
+    return cached;
+  }
+
+  const resolvers = [
+    // 1) Reverse DNS
+    async () => {
+      try {
+        const hostnames = await dns.reverse(ip);
+        return hostnames && hostnames.length > 0 ? hostnames[0] : null;
+      } catch (_) {
+        return null;
+      }
+    },
+    // 2) NetBIOS (Windows)
+    async () => {
+      if (process.platform !== 'win32') return null;
+      try {
+        return await new Promise((resolve) => {
+          const t = setTimeout(() => resolve(null), 2500);
+          exec(`nbtstat -A ${ip}`, { windowsHide: true }, (err, stdout) => {
+            clearTimeout(t);
+            if (err || !stdout) return resolve(null);
+            const lines = String(stdout).split(/\r?\n/);
+            for (const line of lines) {
+              const m = line.match(/^\s*([A-Z0-9_.\-]+)\s+<00>\s+UNIQUE/i);
+              if (m && m[1]) return resolve(m[1]);
+            }
+            resolve(null);
+          });
+        });
+      } catch (_) {
+        return null;
+      }
+    },
+    // 3) ping -a (Windows)
+    async () => {
+      if (process.platform !== 'win32') return null;
+      try {
+        return await new Promise((resolve) => {
+          const t = setTimeout(() => resolve(null), 2500);
+          exec(`ping -a -n 1 ${ip}`, { windowsHide: true }, (err, stdout) => {
+            clearTimeout(t);
+            if (err || !stdout) return resolve(null);
+            const m = String(stdout).match(/Pinging\s+([^\s\[]+)\s+\[/i);
+            if (m && m[1] && !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(m[1])) return resolve(m[1]);
+            resolve(null);
+          });
+        });
+      } catch (_) {
+        return null;
+      }
+    },
+    // 4) Optional LLMNR (only if module present)
+    async () => {
+      try {
+        const llmnr = require('node-llmnr');
+        const resolver = new llmnr.Resolver();
+        const name = await resolver.resolve(ip, { timeout: 2000 });
+        return name || null;
+      } catch (_) {
+        return null;
+      }
+    }
+  ];
+
+  const results = await Promise.all(resolvers.map(r => r()));
+  const hostname = results.find(h => h && typeof h === 'string' && h !== ip) || null;
+
+  if (hostname) {
+    cacheHostname(ip, hostname);
+    console.log(`[HOSTNAME] Resolved ${ip} -> ${hostname}`);
+  } else {
+    console.log(`[HOSTNAME] No hostname resolved for ${ip}`);
+  }
+
+  return hostname;
+}
+
+async function scanLanViaArp() {
   return new Promise((resolve, reject) => {
+    // Use command-line arp (most reliable)
     const cmd = 'arp -a';
     exec(cmd, { windowsHide: true }, (err, stdout, stderr) => {
-      if (err) return reject(err);
+      if (err) {
+        console.error('ARP command failed:', err);
+        return reject(err);
+      }
       try {
         const devices = parseArpTable(stdout || '');
+        console.log(`[ARP] Parsed ${devices.length} devices from ARP table`);
         resolve(devices);
       } catch (e) {
+        console.error('ARP parsing failed:', e);
         reject(e);
       }
     });
   });
 }
+
+// Enhanced scan using nmap with OS and service detection
+function scanLanViaNmap(subnet, options = {}) {
+  return new Promise((resolve, reject) => {
+    if (!nmap) {
+      return reject(new Error('nmap not available'));
+    }
+    
+    try {
+      // Enhanced nmap options:
+      // -sn: Ping scan (no port scan)
+      // -O: OS detection
+      // -sV: Service version detection
+      // -A: Aggressive scan (OS, version, script, traceroute)
+      // --osscan-guess: Guess OS more aggressively
+      // -p: Port range (if specified)
+      const { aggressive, ports, osDetection } = options;
+      
+      let nmapFlags = '-sn -PR'; // Default: ping scan
+      
+      if (aggressive) {
+        nmapFlags = '-A --osscan-guess'; // Full aggressive scan
+      } else if (osDetection) {
+        nmapFlags = '-O --osscan-guess -sV'; // OS and service detection
+      } else if (ports) {
+        nmapFlags = `-sV -p ${ports}`; // Service detection on specific ports
+      }
+      
+      const nmapScan = new nmap.NmapScan(subnet || '192.168.0.0/24', nmapFlags);
+      
+      const devices = [];
+      
+      nmapScan.on('complete', (data) => {
+        if (Array.isArray(data)) {
+          for (const host of data) {
+            if (host && host.ip) {
+              const device = {
+                ip: host.ip,
+                mac: host.mac || '',
+                hostname: host.hostname || '',
+                name: host.hostname || getMacVendor(host.mac),
+                vendor: getMacVendor(host.mac)
+              };
+              
+              // Add OS information if available
+              if (host.os && host.os.length > 0) {
+                device.os = host.os[0].name || 'Unknown';
+                device.osAccuracy = host.os[0].accuracy || 0;
+              }
+              
+              // Add open ports and services if available
+              if (host.openPorts && host.openPorts.length > 0) {
+                device.ports = host.openPorts.map(p => ({
+                  port: p.port,
+                  protocol: p.protocol,
+                  service: p.service || 'unknown',
+                  version: p.version || ''
+                }));
+              }
+              
+              devices.push(device);
+            }
+          }
+        }
+        resolve(devices);
+      });
+      
+      nmapScan.on('error', (err) => {
+        reject(err);
+      });
+      
+      nmapScan.startScan();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+// Bonjour/mDNS discovery for device names and services
+function scanViaBonjourMdns(timeout = 5000) {
+  return new Promise((resolve) => {
+    if (!bonjour) {
+      return resolve([]);
+    }
+    
+    const devices = new Map();
+    
+    try {
+      // Browse for all services
+      const browser = bonjour.find({});
+      
+      browser.on('up', (service) => {
+        const ip = service.referer?.address || service.addresses?.[0];
+        if (ip && ip.includes('.')) { // IPv4 only
+          const key = ip;
+          if (!devices.has(key)) {
+            devices.set(key, {
+              ip,
+              name: service.name || service.host || '',
+              hostname: service.host || '',
+              type: service.type || '',
+              services: []
+            });
+          }
+          const device = devices.get(key);
+          device.services.push({
+            type: service.type,
+            name: service.name,
+            port: service.port,
+            protocol: service.protocol
+          });
+        }
+      });
+      
+      // Stop browsing after timeout
+      setTimeout(() => {
+        browser.stop();
+        resolve(Array.from(devices.values()));
+      }, timeout);
+    } catch (e) {
+      console.warn('Bonjour/mDNS scan error:', e?.message || e);
+      resolve([]);
+    }
+  });
+}
+
+// Port scanning for device type identification
+function scanCommonPorts(ip) {
+  return new Promise((resolve) => {
+    if (!nmap) {
+      return resolve([]);
+    }
+    
+    try {
+      // Scan common ports: SSH, HTTP, HTTPS, RDP, VNC, etc.
+      const commonPorts = '22,80,443,3389,5900,8080,8443,9090';
+      const nmapScan = new nmap.NmapScan(ip, `-sV -p ${commonPorts}`);
+      
+      const ports = [];
+      
+      nmapScan.on('complete', (data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          const host = data[0];
+          if (host.openPorts) {
+            for (const p of host.openPorts) {
+              ports.push({
+                port: p.port,
+                protocol: p.protocol,
+                service: p.service || 'unknown',
+                version: p.version || ''
+              });
+            }
+          }
+        }
+        resolve(ports);
+      });
+      
+      nmapScan.on('error', () => {
+        resolve([]);
+      });
+      
+      nmapScan.startScan();
+    } catch (e) {
+      resolve([]);
+    }
+  });
+}
+
+// Merge device data from multiple sources
+function mergeDeviceData(sources) {
+  const deviceMap = new Map();
+  
+  for (const source of sources) {
+    for (const device of source.devices || []) {
+      const key = device.ip;
+      if (!deviceMap.has(key)) {
+        deviceMap.set(key, { ...device, sources: [source.method] });
+      } else {
+        const existing = deviceMap.get(key);
+        // Merge data, preferring more detailed information
+        existing.sources.push(source.method);
+        if (device.mac && !existing.mac) existing.mac = device.mac;
+        if (device.hostname && !existing.hostname) existing.hostname = device.hostname;
+        if (device.name && (!existing.name || existing.name === 'Unknown Vendor')) existing.name = device.name;
+        if (device.vendor && !existing.vendor) existing.vendor = device.vendor;
+        if (device.os && !existing.os) existing.os = device.os;
+        if (device.osAccuracy && !existing.osAccuracy) existing.osAccuracy = device.osAccuracy;
+        if (device.ports && (!existing.ports || existing.ports.length === 0)) existing.ports = device.ports;
+        if (device.services && (!existing.services || existing.services.length === 0)) existing.services = device.services;
+        if (device.type && !existing.type) existing.type = device.type;
+      }
+    }
+  }
+  
+  return Array.from(deviceMap.values());
+}
+
+// Debug endpoint to test ARP parsing
+app.get('/api/lan/arp-debug', async (req, res) => {
+  try {
+    const { exec } = require('child_process');
+    exec('arp -a', { windowsHide: true }, (err, stdout, stderr) => {
+      if (err) {
+        return res.json({ error: err.message, stderr });
+      }
+      const devices = parseArpTable(stdout);
+      res.json({
+        raw: stdout,
+        parsed: devices,
+        count: devices.length
+      });
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // List local IPv4 interfaces
 app.get('/api/lan/interfaces', (req, res) => {
@@ -179,25 +765,255 @@ app.get('/api/lan/interfaces', (req, res) => {
   res.json(out);
 });
 
-// Scan local network for devices (best-effort, cross-platform)
+// Scan local network for devices (comprehensive multi-method scan)
 app.get('/api/lan/scan', async (req, res) => {
   try {
-    let devices = [];
-    if (findLocalDevices) {
+    const { mode, subnet, ports } = req.query;
+    const scanMode = mode || 'fast'; // fast, detailed, aggressive
+    
+    console.log(`[SCAN] Starting ${scanMode} scan...`);
+    const startTime = Date.now();
+    
+    const sources = [];
+    
+    // 1. Bonjour/mDNS discovery (fast, gets friendly names)
+    if (bonjour && (scanMode === 'fast' || scanMode === 'detailed' || scanMode === 'aggressive')) {
       try {
-        devices = await findLocalDevices();
+        console.log('[SCAN] Running Bonjour/mDNS discovery...');
+        const bonjourDevices = await scanViaBonjourMdns(scanMode === 'fast' ? 3000 : 5000);
+        if (bonjourDevices && bonjourDevices.length > 0) {
+          sources.push({ method: 'bonjour', devices: bonjourDevices });
+          console.log(`[SCAN] Bonjour found ${bonjourDevices.length} devices`);
+        } else {
+          console.log('[SCAN] Bonjour found no devices');
+        }
       } catch (e) {
-        console.warn('local-devices failed, falling back to ARP:', e?.message || e);
+        console.warn('Bonjour scan failed:', e?.message || e);
+      }
+    } else if (!bonjour) {
+      console.log('[SCAN] Bonjour not available (package not installed)');
+    }
+    
+    // 2. ARP scan (fast, gets MAC addresses)
+    try {
+      console.log('[SCAN] Running ARP scan...');
+      const arpDevices = await scanLanViaArp();
+      if (arpDevices && arpDevices.length > 0) {
+        sources.push({ method: 'arp', devices: arpDevices });
+        console.log(`[SCAN] ARP found ${arpDevices.length} devices`);
+      } else {
+        console.warn('[SCAN] ARP returned no devices');
+      }
+    } catch (e) {
+      console.error('ARP scan failed:', e?.message || e);
+    }
+    
+    // 3. Nmap scan (detailed or aggressive)
+    if (nmap && (scanMode === 'detailed' || scanMode === 'aggressive')) {
+      try {
+        console.log(`[SCAN] Running nmap ${scanMode} scan...`);
+        const nmapOptions = {
+          aggressive: scanMode === 'aggressive',
+          osDetection: scanMode === 'detailed' || scanMode === 'aggressive',
+          ports: ports || (scanMode === 'aggressive' ? '1-1000' : '22,80,443,3389,5900')
+        };
+        const nmapDevices = await scanLanViaNmap(subnet, nmapOptions);
+        sources.push({ method: 'nmap', devices: nmapDevices });
+        console.log(`[SCAN] nmap found ${nmapDevices.length} devices`);
+      } catch (e) {
+        console.warn('nmap scan failed:', e?.message || e);
+      }
+    } else if (nmap && scanMode === 'fast') {
+      // Fast nmap ping scan
+      try {
+        console.log('[SCAN] Running nmap fast scan...');
+        const nmapDevices = await scanLanViaNmap(subnet);
+        sources.push({ method: 'nmap', devices: nmapDevices });
+        console.log(`[SCAN] nmap found ${nmapDevices.length} devices`);
+      } catch (e) {
+        console.warn('nmap scan failed:', e?.message || e);
       }
     }
-    if (!devices || devices.length === 0) {
-      // Fallback via ARP table
-      devices = await scanLanViaArp();
+    
+    // 4. local-devices fallback
+    if (findLocalDevices && sources.length === 0) {
+      try {
+        console.log('[SCAN] Attempting local-devices scan...');
+        const localDevices = await findLocalDevices();
+        sources.push({ method: 'local-devices', devices: localDevices });
+        console.log(`[SCAN] local-devices found ${localDevices.length} devices`);
+      } catch (e) {
+        console.warn('local-devices failed:', e?.message || e);
+      }
     }
-    res.json({ devices });
+    
+    // Merge all device data from different sources
+    console.log(`[SCAN] Merging data from ${sources.length} sources:`, sources.map(s => `${s.method}(${s.devices.length})`).join(', '));
+    let devices = mergeDeviceData(sources);
+    console.log(`[SCAN] After merge: ${devices.length} unique devices`);
+    
+    // Resolve hostnames for devices that don't have one
+    console.log(`[SCAN] Resolving hostnames for ${devices.length} devices...`);
+    const hostnamePromises = devices.map(async (d) => {
+      if (!d.hostname) {
+        try {
+          const hostname = await resolveHostname(d.ip);
+          if (hostname) {
+            d.hostname = hostname;
+            console.log(`[SCAN] ✓ Resolved ${d.ip} -> ${hostname}`);
+          } else {
+            console.log(`[SCAN] ✗ No hostname for ${d.ip}`);
+          }
+        } catch (e) {
+          console.log(`[SCAN] ✗ Failed to resolve ${d.ip}: ${e.message}`);
+        }
+      } else {
+        console.log(`[SCAN] ✓ ${d.ip} already has hostname: ${d.hostname}`);
+      }
+      return d;
+    });
+    devices = await Promise.all(hostnamePromises);
+    console.log(`[SCAN] Hostname resolution complete`);
+    
+    // Enhance devices with vendor information
+    devices = devices.map(d => {
+      const enhanced = { ...d };
+      if (d.mac && !d.vendor) {
+        enhanced.vendor = getMacVendor(d.mac);
+      }
+      if (!d.name || d.name === 'Unknown Vendor') {
+        enhanced.name = d.hostname || enhanced.vendor || 'Unknown Device';
+      }
+      // Identify device type based on services/ports
+      if (!enhanced.deviceType) {
+        enhanced.deviceType = identifyDeviceType(enhanced);
+      }
+      return enhanced;
+    });
+    
+    const scanTime = Date.now() - startTime;
+    console.log(`[SCAN] Completed in ${scanTime}ms, found ${devices.length} unique devices`);
+    
+    // Log device summary
+    devices.forEach(d => {
+      console.log(`[SCAN] Device: ${d.ip} | Name: ${d.name} | Hostname: ${d.hostname || 'N/A'} | Vendor: ${d.vendor || 'N/A'} | Type: ${d.deviceType || 'N/A'}`);
+    });
+    
+    res.json({ 
+      devices, 
+      scanMode,
+      scanTime,
+      methods: sources.map(s => s.method),
+      totalDevices: devices.length
+    });
   } catch (err) {
     console.error('LAN scan error:', err);
     res.status(500).json({ error: 'LAN scan failed', details: String(err.message || err) });
+  }
+});
+
+// Helper function to identify device type based on available information
+function identifyDeviceType(device) {
+  // Check services first (from Bonjour)
+  if (device.services && device.services.length > 0) {
+    const serviceTypes = device.services.map(s => s.type.toLowerCase());
+    if (serviceTypes.some(t => t.includes('printer') || t.includes('ipp'))) return 'Printer';
+    if (serviceTypes.some(t => t.includes('airplay') || t.includes('raop'))) return 'Media Device';
+    if (serviceTypes.some(t => t.includes('smb') || t.includes('afp'))) return 'File Server';
+    if (serviceTypes.some(t => t.includes('http') || t.includes('https'))) return 'Web Server';
+  }
+  
+  // Check open ports
+  if (device.ports && device.ports.length > 0) {
+    const portNumbers = device.ports.map(p => p.port);
+    const services = device.ports.map(p => p.service?.toLowerCase() || '');
+    
+    if (portNumbers.includes(3389)) return 'Windows PC';
+    if (portNumbers.includes(5900)) return 'VNC Server';
+    if (portNumbers.includes(22) && services.some(s => s.includes('ssh'))) return 'Linux/Unix Server';
+    if (portNumbers.includes(80) || portNumbers.includes(443)) return 'Web Server';
+    if (services.some(s => s.includes('printer'))) return 'Printer';
+  }
+  
+  // Check OS information
+  if (device.os) {
+    const os = device.os.toLowerCase();
+    if (os.includes('windows')) return 'Windows PC';
+    if (os.includes('linux')) return 'Linux Device';
+    if (os.includes('mac') || os.includes('darwin')) return 'Mac';
+    if (os.includes('ios')) return 'iOS Device';
+    if (os.includes('android')) return 'Android Device';
+  }
+  
+  // Check vendor
+  if (device.vendor) {
+    const vendor = device.vendor.toLowerCase();
+    if (vendor.includes('raspberry')) return 'Raspberry Pi';
+    if (vendor.includes('apple')) return 'Apple Device';
+    if (vendor.includes('samsung')) return 'Samsung Device';
+    if (vendor.includes('cisco')) return 'Network Device';
+    if (vendor.includes('tp-link') || vendor.includes('d-link')) return 'Router/Switch';
+    if (vendor.includes('vmware') || vendor.includes('virtualbox')) return 'Virtual Machine';
+  }
+  
+  return 'Unknown';
+}
+
+// New endpoint for detailed device scan (single IP)
+app.get('/api/lan/scan/:ip', async (req, res) => {
+  try {
+    const { ip } = req.params;
+    console.log(`[SCAN] Detailed scan of ${ip}...`);
+    
+    const deviceInfo = {
+      ip,
+      scannedAt: new Date().toISOString()
+    };
+    
+    // Get MAC from ARP
+    try {
+      const arpDevices = await scanLanViaArp();
+      const arpDevice = arpDevices.find(d => d.ip === ip);
+      if (arpDevice) {
+        deviceInfo.mac = arpDevice.mac;
+        deviceInfo.vendor = getMacVendor(arpDevice.mac);
+      }
+    } catch (e) {
+      console.warn('ARP lookup failed:', e?.message || e);
+    }
+    
+    // Port scan
+    if (nmap) {
+      try {
+        const ports = await scanCommonPorts(ip);
+        deviceInfo.ports = ports;
+      } catch (e) {
+        console.warn('Port scan failed:', e?.message || e);
+      }
+    }
+    
+    // OS detection
+    if (nmap) {
+      try {
+        const nmapResult = await scanLanViaNmap(ip, { osDetection: true });
+        if (nmapResult.length > 0) {
+          const device = nmapResult[0];
+          if (device.os) deviceInfo.os = device.os;
+          if (device.osAccuracy) deviceInfo.osAccuracy = device.osAccuracy;
+          if (device.hostname) deviceInfo.hostname = device.hostname;
+        }
+      } catch (e) {
+        console.warn('OS detection failed:', e?.message || e);
+      }
+    }
+    
+    deviceInfo.deviceType = identifyDeviceType(deviceInfo);
+    deviceInfo.name = deviceInfo.hostname || deviceInfo.vendor || 'Unknown Device';
+    
+    res.json(deviceInfo);
+  } catch (err) {
+    console.error('Device scan error:', err);
+    res.status(500).json({ error: 'Device scan failed', details: String(err.message || err) });
   }
 });
 
@@ -371,7 +1187,7 @@ app.post('/api/deploy', async (req, res) => {
 // Get current kiosk config
 app.get('/api/config', (req, res) => {
   // Check if there's a client-specific config for the requesting IP
-  const clientIp = req.ip;
+  const clientIp = normalizeIp(req.ip);
   if (clientSpecificConfigs.has(clientIp)) {
     const clientConfig = Object.assign({}, kioskConfig, clientSpecificConfigs.get(clientIp));
     res.json(clientConfig);
@@ -469,6 +1285,7 @@ app.get('/api/devices', (req, res) => {
     currentUrl: client.currentUrl || 'Unknown'
   }));
 
+  console.log(`[API] /api/devices - Returning ${devices.length} connected client(s):`, devices.map(d => d.ip).join(', '));
   res.json(devices);
 });
 
@@ -479,7 +1296,7 @@ app.get('/api/stream', (req, res) => {
   res.flushHeaders && res.flushHeaders();
 
   // Determine client-specific config if available
-  const clientIp = req.ip;
+  const clientIp = normalizeIp(req.ip);
   let clientConfig = kioskConfig;
   if (clientSpecificConfigs.has(clientIp)) {
     clientConfig = Object.assign({}, kioskConfig, clientSpecificConfigs.get(clientIp));
@@ -499,6 +1316,7 @@ app.get('/api/stream', (req, res) => {
   };
 
   sseClients.set(clientId, clientInfo);
+  console.log(`[SSE] Client connected: ${clientIp} (ID: ${clientId.substring(0, 8)}...)`);
 
   req.on('close', () => {
     sseClients.delete(clientId);
@@ -507,7 +1325,7 @@ app.get('/api/stream', (req, res) => {
 
 // Client registration endpoint to update current URL
 app.post('/api/register', (req, res) => {
-  const clientIp = req.ip;
+  const clientIp = normalizeIp(req.ip);
   const { currentUrl } = req.body || {};
   for (const [id, client] of sseClients.entries()) {
     if (client.ip === clientIp) {

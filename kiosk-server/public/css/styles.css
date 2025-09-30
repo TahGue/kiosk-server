@@ -205,6 +205,24 @@ body {
 
 .device-item:last-child { border-bottom: none; }
 
+.device-status {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-right: 0.5rem;
+    flex-shrink: 0;
+}
+
+.device-status.connected {
+    background-color: #4caf50;
+    box-shadow: 0 0 6px rgba(76, 175, 80, 0.6);
+}
+
+.device-status.disconnected {
+    background-color: #f44336;
+    box-shadow: 0 0 6px rgba(244, 67, 54, 0.6);
+}
+
 .device-id { font-weight: bold; flex: 1; min-width: 100px; }
 .device-ip { flex: 1; min-width: 100px; }
 .device-agent { flex: 2; min-width: 200px; font-size: 0.9em; }
