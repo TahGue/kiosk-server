@@ -176,6 +176,11 @@
             color: white;
         }
 
+        .status-arp {
+            background: #3b82f6;
+            color: white;
+        }
+
         .actions-bar {
             display: flex;
             gap: 10px;
@@ -279,13 +284,14 @@
         <div class="section">
             <h2>🔍 Network Scanner</h2>
             <div class="input-group">
-                <input type="text" id="subnet-input" placeholder="Subnet (e.g., 192.168.0.0/24)" />
+                <input type="text" id="subnet-input" placeholder="Auto-detected subnet" />
                 <select id="scan-mode">
                     <option value="fast">Fast Scan</option>
                     <option value="detailed">Detailed Scan</option>
                 </select>
                 <button onclick="scanNetwork()">Scan Network</button>
                 <button class="secondary" onclick="refreshDevices()">Refresh Connected</button>
+                <button class="secondary" onclick="resolveHostnames()">Resolve Hostnames</button>
             </div>
             <div id="scan-result"></div>
         </div>
@@ -327,7 +333,36 @@
                 const hbRes = await fetch('/api/heartbeat/clients');
                 const hbData = await hbRes.json();
                 
-                devices = hbData.clients || [];
+                // Also load ARP devices
+                const arpRes = await fetch('/api/lan/arp');
+                const arpData = await arpRes.json();
+                
+                // Merge heartbeat clients with ARP devices
+                const hbClients = hbData.clients || [];
+                const arpDevices = arpData.parsed || [];
+                
+                // Create a map of heartbeat clients by IP
+                const hbMap = new Map();
+                hbClients.forEach(client => {
+                    if (client.ip) {
+                        hbMap.set(client.ip, client);
+                    }
+                });
+                
+                // Add ARP devices that aren't already in heartbeat clients
+                arpDevices.forEach(arpDevice => {
+                    if (!hbMap.has(arpDevice.ip)) {
+                        hbMap.set(arpDevice.ip, {
+                            id: arpDevice.ip,
+                            ip: arpDevice.ip,
+                            mac: arpDevice.mac,
+                            hostname: arpDevice.ip,
+                            lastSeen: null // Not a heartbeat client
+                        });
+                    }
+                });
+                
+                devices = Array.from(hbMap.values());
                 renderDevices();
             } catch (error) {
                 showMessage('error', 'Failed to load devices: ' + error.message);
@@ -339,24 +374,26 @@
             const container = document.getElementById('devices-container');
             
             if (devices.length === 0) {
-                container.innerHTML = '<div class="loading"><p>No devices found. Try scanning the network.</p></div>';
+                container.innerHTML = '<div class="loading"><p>No devices found. Click "Refresh Connected" to load devices.</p></div>';
                 return;
             }
 
             container.innerHTML = devices.map(device => {
                 const isSelected = selectedDevices.has(device.id || device.ip);
-                const lastSeen = device.lastSeen ? new Date(device.lastSeen).toLocaleString() : 'Never';
+                const lastSeen = device.lastSeen ? new Date(device.lastSeen).toLocaleString() : 'Not connected';
                 const isOnline = device.lastSeen && (Date.now() - new Date(device.lastSeen).getTime() < 60000);
+                const isArpOnly = !device.lastSeen; // Device found via ARP but not sending heartbeats
                 
                 return `
                     <div class="device-card ${isSelected ? 'selected' : ''}" onclick="toggleDevice('${device.id || device.ip}')">
                         <h3>${device.hostname || device.ip || 'Unknown'}</h3>
                         <div class="device-info">IP: ${device.ip || 'N/A'}</div>
-                        <div class="device-info">ID: ${device.id || 'N/A'}</div>
+                        ${device.mac ? `<div class="device-info">MAC: ${device.mac}</div>` : ''}
+                        ${device.id && device.id !== device.ip ? `<div class="device-info">ID: ${device.id}</div>` : ''}
                         <div class="device-info">Last Seen: ${lastSeen}</div>
                         ${device.currentUrl ? `<div class="device-info">URL: ${device.currentUrl}</div>` : ''}
-                        <span class="device-status ${isOnline ? 'status-online' : 'status-offline'}">
-                            ${isOnline ? 'Online' : 'Offline'}
+                        <span class="device-status ${isOnline ? 'status-online' : isArpOnly ? 'status-arp' : 'status-offline'}">
+                            ${isOnline ? 'Online (Heartbeat)' : isArpOnly ? 'Detected (ARP)' : 'Offline'}
                         </span>
                     </div>
                 `;
@@ -588,6 +625,55 @@
             showMessage('success', 'Devices refreshed');
         }
 
+        // Resolve hostnames for devices
+        async function resolveHostnames() {
+            showMessage('warning', 'Resolving hostnames... This may take a moment.');
+            
+            let resolved = 0;
+            for (const device of devices) {
+                if (!device.hostname || device.hostname === device.ip) {
+                    try {
+                        const res = await fetch(`/api/lan/resolve/${device.ip}`);
+                        const data = await res.json();
+                        if (data.hostname && data.hostname !== device.ip) {
+                            device.hostname = data.hostname;
+                            resolved++;
+                        }
+                    } catch (error) {
+                        console.error('Failed to resolve', device.ip, error);
+                    }
+                }
+            }
+            
+            renderDevices();
+            showMessage('success', `Resolved ${resolved} hostname(s)`);
+        }
+
+        // Auto-detect subnet from server
+        async function detectSubnet() {
+            try {
+                const res = await fetch('/api/lan/interfaces');
+                const data = await res.json();
+                
+                if (data.interfaces && data.interfaces.length > 0) {
+                    // Find the first non-loopback interface with an IPv4 address
+                    for (const iface of data.interfaces) {
+                        if (iface.address && iface.address.includes('.') && !iface.address.startsWith('127.')) {
+                            // Convert IP to subnet (e.g., 172.168.1.5 -> 172.168.1.0/24)
+                            const parts = iface.address.split('.');
+                            const subnet = `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+                            document.getElementById('subnet-input').value = subnet;
+                            document.getElementById('subnet-input').placeholder = subnet;
+                            return subnet;
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to detect subnet:', error);
+            }
+            return null;
+        }
+
         // Show message
         function showMessage(type, message) {
             const existing = document.getElementById('scan-result');
@@ -598,7 +684,12 @@
         }
 
         // Initialize
-        loadDevices();
+        async function init() {
+            await detectSubnet();
+            await loadDevices();
+        }
+        
+        init();
         setInterval(loadDevices, 30000); // Refresh every 30 seconds
     </script>
 </body>

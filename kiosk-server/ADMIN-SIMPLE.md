@@ -29,18 +29,25 @@ The URL will be changed immediately on all selected devices.
 
 ### 2. 🔍 Network Scanner
 
-**Scan your network to find devices:**
-1. (Optional) Enter a subnet (e.g., `192.168.0.0/24`)
-   - Leave empty to scan your local network automatically
+**Automatic device discovery:**
+- The dashboard automatically loads devices from ARP table on startup
+- Your subnet is auto-detected (e.g., `172.168.1.0/24`)
+- All devices on your local network are shown immediately
+
+**Scan your network to find more devices:**
+1. The subnet field is pre-filled with your network
 2. Choose scan mode:
    - **Fast**: Quick scan (recommended)
    - **Detailed**: Slower but more thorough
 3. Click "Scan Network"
 
-The scanner will find all devices on your network, including kiosk clients.
+**Refresh options:**
+- **Refresh Connected**: Update heartbeat clients and ARP table
+- **Resolve Hostnames**: Look up hostnames for devices showing only IP addresses
 
-**Refresh connected devices:**
-- Click "Refresh Connected" to update the list of devices that have sent heartbeats
+The dashboard shows devices from two sources:
+- **Heartbeat Clients**: Kiosk devices actively sending status updates (shown as "Online")
+- **ARP Devices**: All devices detected on your network (shown as "Detected (ARP)")
 
 ### 3. 💻 Device Management
 
@@ -67,10 +74,17 @@ All actions require confirmation before executing.
 
 ### Device Detection
 
-The dashboard shows devices from two sources:
+The dashboard automatically shows devices from three sources:
 
-1. **Heartbeat Clients**: Devices running the kiosk client script that send regular heartbeats
-2. **Network Scan**: Devices discovered via network scanning
+1. **Heartbeat Clients**: Devices running the kiosk client script that send regular heartbeats (shown as "Online (Heartbeat)")
+2. **ARP Table**: All devices on your local network detected via ARP (shown as "Detected (ARP)")
+3. **Network Scan**: Additional devices discovered via manual network scanning
+
+**Your specific case:**
+- Devices like `172.168.1.23` are automatically detected via ARP
+- They appear in the dashboard even if they're not running the kiosk client
+- You can see their IP and MAC address
+- Use "Resolve Hostnames" to get their device names
 
 ### Real-Time Updates
 
