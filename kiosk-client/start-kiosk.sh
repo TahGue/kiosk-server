@@ -1,11 +1,12 @@
 #!/bin/bash
 
 # ==============================================================================
-# Kiosk Client Startup Script for Linux Mint
+# Kiosk Client Startup Script for Linux (Mint, antiX, Debian-based)
 # ==============================================================================
 # This script sets up a kiosk environment and launches a web browser in full-screen
 # kiosk mode. It ensures it automatically restarts if it closes and can set up a
 # dedicated 'student' user with autologin.
+# Supports: Linux Mint (LightDM), antiX (SLiM/no DM), and other Debian-based distros.
 
 # --- Step 1: CONFIGURE YOUR SERVER ADDRESS ---
 # IMPORTANT: Replace "<YOUR_SERVER_IP>" with the actual local IP address
@@ -137,15 +138,16 @@ if [[ "$(id -u)" -eq 0 ]]; then
    echo "After setup, run this script as a regular user to start the kiosk."
    # --- Setup Steps ---
    # --- 1. Install Browser (offline-friendly) ---
-   echo "[+] Checking for browsers (Firefox/Midori preferred)..."
-   if command -v firefox >/dev/null 2>&1 || command -v midori >/dev/null 2>&1 || command -v google-chrome >/dev/null 2>&1; then
+   echo "[+] Checking for browsers (Firefox preferred for modern web apps)..."
+   if command -v firefox >/dev/null 2>&1 || command -v google-chrome >/dev/null 2>&1; then
      echo "[+] A browser is already installed. Skipping install."
    else
-     echo "[!] No browser found. Attempting offline-friendly install of firefox or midori via local repo if available..."
+     echo "[!] No browser found. Attempting to install Firefox via local repo if available..."
      DEBIAN_FRONTEND=noninteractive apt-get update || true
-     DEBIAN_FRONTEND=noninteractive apt-get install -y firefox || DEBIAN_FRONTEND=noninteractive apt-get install -y midori || true
-     if ! command -v firefox >/dev/null 2>&1 && ! command -v midori >/dev/null 2>&1; then
-       echo "[!] Could not install Firefox/Midori automatically. If offline, copy .deb packages via USB and run: dpkg -i <package>.deb; DEBIAN_FRONTEND=noninteractive apt-get -f install"
+     DEBIAN_FRONTEND=noninteractive apt-get install -y firefox || DEBIAN_FRONTEND=noninteractive apt-get install -y firefox-esr || true
+     if ! command -v firefox >/dev/null 2>&1; then
+       echo "[!] Could not install Firefox automatically. If offline, copy firefox .deb packages via USB and run: dpkg -i <package>.deb; DEBIAN_FRONTEND=noninteractive apt-get -f install"
+       echo "[i] Note: Midori is NOT recommended as it cannot handle modern web frameworks (Tailwind CSS, Next.js)."
      fi
    fi
 
@@ -224,12 +226,9 @@ if [[ -x "$CLIENT_LAUNCHER" ]]; then
   exec "$CLIENT_LAUNCHER"
 fi
 
-# Fallback: try common browsers directly
+# Fallback: try common browsers directly (Firefox preferred for modern web apps)
 if command -v firefox >/dev/null 2>&1; then
   exec firefox -kiosk --fullscreen "${SERVER_BASE:-http://localhost:4000}/client"
-fi
-if command -v midori >/dev/null 2>&1; then
-  exec midori -e Fullscreen=1 "${SERVER_BASE:-http://localhost:4000}/client"
 fi
 if command -v google-chrome >/dev/null 2>&1; then
   exec google-chrome --kiosk --no-first-run --disable-infobars --start-fullscreen --window-position=0,0 "${SERVER_BASE:-http://localhost:4000}/client"
@@ -264,8 +263,16 @@ XBCFG
      echo "[+] Installing and enabling OpenSSH server..."
      DEBIAN_FRONTEND=noninteractive apt-get update || true
      DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server || true
-     { systemctl enable ssh || systemctl enable sshd; } 2>&1 || true
-     { systemctl start ssh || systemctl start sshd; } 2>&1 || true
+     
+     # Enable and start SSH (systemd or SysVinit)
+     if command -v systemctl >/dev/null 2>&1; then
+       { systemctl enable ssh || systemctl enable sshd; } 2>&1 || true
+       { systemctl start ssh || systemctl start sshd; } 2>&1 || true
+     else
+       # SysVinit
+       { update-rc.d ssh defaults || update-rc.d sshd defaults; } 2>&1 || true
+       { service ssh start || service sshd start || /etc/init.d/ssh start; } 2>&1 || true
+     fi
 
      # Ensure user exists
      if ! id -u "$SSH_USER_TO_USE" >/dev/null 2>&1; then
@@ -307,35 +314,107 @@ XBCFG
        else
          printf "\nPasswordAuthentication %s\n" "$SSH_PASSWORD_AUTH_VAL" >> "$SSHD_CONF_PATH"
        fi
-       systemctl restart ssh || systemctl restart sshd || true
+       if command -v systemctl >/dev/null 2>&1; then
+         systemctl restart ssh || systemctl restart sshd || true
+       else
+         service ssh restart || service sshd restart || /etc/init.d/ssh restart || true
+       fi
      fi
    fi
 
-   # --- 4. Create the X-Session Desktop Entry ---
-   echo "[+] Creating X-session entry..."
-   cat > /usr/share/xsessions/kiosk.desktop << EOL
+   # --- 4. Detect Display Manager and Configure Autologin ---
+   echo "[+] Detecting display manager and configuring autologin..."
+   
+   # Detect which display manager is in use
+   if command -v lightdm >/dev/null 2>&1 || [[ -d /etc/lightdm ]]; then
+     echo "[+] LightDM detected. Configuring LightDM autologin..."
+     mkdir -p /etc/lightdm/lightdm.conf.d
+     cat > /etc/lightdm/lightdm.conf.d/60-kiosk-autologin.conf << EOL
+[Seat:*]
+autologin-user=student
+autologin-session=kiosk
+EOL
+     # Create X-session entry for LightDM
+     cat > /usr/share/xsessions/kiosk.desktop << EOL
 [Desktop Entry]
 Name=Kiosk Mode
 Comment=Starts the kiosk browser session
 Exec=/usr/local/bin/kiosk-session.sh
 Type=Application
 EOL
-
-   # --- 5. Configure LightDM for Autologin ---
-   echo "[+] Configuring autologin for 'student' user..."
-   cat > /etc/lightdm/lightdm.conf.d/60-kiosk-autologin.conf << EOL
-[Seat:*]
-autologin-user=student
-autologin-session=kiosk
-EOL
+   
+   elif command -v slim >/dev/null 2>&1 || [[ -f /etc/slim.conf ]]; then
+     echo "[+] SLiM detected. Configuring SLiM autologin..."
+     # Backup original slim.conf
+     [[ -f /etc/slim.conf ]] && cp /etc/slim.conf /etc/slim.conf.backup
+     
+     # Configure SLiM for autologin
+     if [[ -f /etc/slim.conf ]]; then
+       sed -i 's/^#\?default_user.*/default_user        student/' /etc/slim.conf
+       sed -i 's/^#\?auto_login.*/auto_login          yes/' /etc/slim.conf
+     fi
+     
+     # Create .xsession for student user (antiX uses this)
+     su - student -c 'cat > ~/.xsession << "XSESS"
+#!/bin/bash
+exec /usr/local/bin/kiosk-session.sh
+XSESS
+chmod +x ~/.xsession'
+   
+   else
+     echo "[+] No display manager detected. Configuring .xinitrc for startx autologin..."
+     
+     # For systems without a display manager, use .xinitrc
+     su - student -c 'cat > ~/.xinitrc << "XINITRC"
+#!/bin/bash
+exec /usr/local/bin/kiosk-session.sh
+XINITRC
+chmod +x ~/.xinitrc'
+     
+     # Configure autologin via inittab (SysVinit) or getty
+     if [[ -f /etc/inittab ]]; then
+       echo "[+] Configuring SysVinit autologin via inittab..."
+       # Check if autologin is already configured
+       if ! grep -q "student.*startx" /etc/inittab; then
+         # Backup inittab
+         cp /etc/inittab /etc/inittab.backup
+         # Replace getty on tty1 with autologin
+         sed -i 's|^1:.*respawn.*getty.*tty1.*|1:2345:respawn:/bin/login -f student tty1 </dev/tty1 >/dev/tty1 2>&1|' /etc/inittab
+       fi
+       
+       # Create .bash_profile to auto-startx on tty1
+       su - student -c 'cat > ~/.bash_profile << "BASHPROF"
+# Auto-start X on tty1 login
+if [[ -z "$DISPLAY" ]] && [[ $(tty) == "/dev/tty1" ]]; then
+  exec startx
+fi
+BASHPROF
+'
+     fi
+   fi
 
    # --- 6. Final Touches ---
    echo "[+] Setting permissions..."
    chown student:student /usr/local/bin/kiosk-session.sh
+   
+   # Allow student user to reboot and shutdown without password
+   echo "[+] Configuring sudo permissions for student user..."
+   if ! grep -q "student.*reboot" /etc/sudoers 2>/dev/null && ! grep -q "student.*shutdown" /etc/sudoers 2>/dev/null; then
+     echo "student ALL=(ALL) NOPASSWD: /sbin/reboot, /sbin/shutdown" >> /etc/sudoers
+   fi
 
    # Disable power-saving targets to keep kiosk awake
    echo "[+] Disabling power-saving (sleep/suspend/hibernate)..."
-   systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target || true
+   if command -v systemctl >/dev/null 2>&1; then
+     systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target || true
+   else
+     echo "[i] systemd not detected. Skipping systemctl power-saving disable."
+     # For SysVinit systems, disable ACPI sleep if possible
+     if [[ -f /etc/default/acpi-support ]]; then
+       sed -i 's/^#\?SUSPEND_METHODS=.*/SUSPEND_METHODS="none"/' /etc/default/acpi-support || true
+       sed -i 's/^#\?HIBERNATE_METHODS=.*/HIBERNATE_METHODS="none"/' /etc/default/acpi-support || true
+     fi
+   fi
 
    # Try to add local APT repo served by kiosk-server for offline installs
    echo "[+] Checking for local APT repo at ${SERVER_BASE}/repo ..."
@@ -410,29 +489,29 @@ else
   log "xrandr not available, using fallback resolution: 1024x768"
 fi
 
-# Lightweight browser preference logic
+# Browser preference logic
+# Note: Prefer Firefox over Midori for modern web apps (Tailwind CSS, Next.js, etc.)
+# Midori cannot handle modern JavaScript frameworks properly
 mem_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null)
-prefer_light=0
-if [[ -n "$mem_mb" && "$mem_mb" -le 4096 ]]; then prefer_light=1; fi
 
-if command_exists "firefox" && (( prefer_light == 0 )); then
-  log "Found Firefox. Using it for kiosk mode."
+if command_exists "firefox"; then
+  log "Found Firefox. Using it for kiosk mode (best for modern web apps)."
   BROWSER_EXECUTABLE="firefox"
   BROWSER_ARGS="-kiosk --fullscreen --no-first-run --disable-default-browser-check --disable-extensions --disable-plugins --disable-session-restore --no-remote --private-window --width=${RESOLUTION%,*} --height=${RESOLUTION#*,}"
-elif command_exists "midori"; then
-  log "Using Midori (lightweight) for kiosk mode."
-  BROWSER_EXECUTABLE="midori"
-  BROWSER_ARGS="-e Fullscreen=1"
-elif command_exists "firefox"; then
-  log "Using Firefox (available) for kiosk mode."
-  BROWSER_EXECUTABLE="firefox"
-  BROWSER_ARGS="-kiosk --fullscreen --no-first-run --disable-default-browser-check --disable-extensions --disable-plugins --disable-session-restore --no-remote --private-window --width=${RESOLUTION%,*} --height=${RESOLUTION#*,}"
+  # Warn if low RAM
+  if [[ -n "$mem_mb" && "$mem_mb" -le 2048 ]]; then
+    log "WARN: Only ${mem_mb}MB RAM detected. Firefox may be slow. Consider upgrading to 4GB RAM for better performance."
+  fi
 elif command_exists "google-chrome"; then
-  log "Using Google Chrome (heavier) for kiosk mode."
+  log "Using Google Chrome for kiosk mode."
   BROWSER_EXECUTABLE="google-chrome"
   BROWSER_ARGS="--kiosk --no-first-run --disable-infobars --disable-crash-reporter --disable-session-crashed-bubble --disable-features=TranslateUI --no-default-browser-check --start-fullscreen --window-size=${RESOLUTION} --window-position=0,0"
+  if [[ -n "$mem_mb" && "$mem_mb" -le 2048 ]]; then
+    log "WARN: Only ${mem_mb}MB RAM detected. Chrome may be slow. Consider upgrading to 4GB RAM for better performance."
+  fi
 else
-  log "ERROR: No supported browser found (Firefox/Midori/Chrome). Please install Firefox or Midori from local repo or via USB (dpkg -i)."
+  log "ERROR: No supported browser found (Firefox/Chrome). Please install Firefox from local repo or via USB (dpkg -i)."
+  log "Note: Midori is not recommended as it cannot handle modern web frameworks (Tailwind CSS, Next.js)."
   echo "Server down, check cables | No browser available"
   exit 1
 fi
@@ -539,6 +618,10 @@ EOF
           reboot)
             log "Reboot command received. Rebooting now..."
             sudo reboot
+            ;;
+          shutdown)
+            log "Shutdown command received. Shutting down now..."
+            sudo shutdown -h now
             ;;
           update_url)
             new_url=$(echo "$payload" | jq -r '.url')

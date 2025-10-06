@@ -1,10 +1,11 @@
 #!/bin/bash
 
 # ==============================================================================
-# Fully Automatic Kiosk Setup Script for Linux Mint
+# Fully Automatic Kiosk Setup Script for Linux (Mint, antiX, Debian-based)
 # ==============================================================================
 # This script configures the entire system to boot directly into a full-screen
 # browser kiosk. It creates a dedicated user and an auto-starting session.
+# Supports: Linux Mint (LightDM), antiX (SLiM/no DM), and other Debian-based distros.
 #
 # WARNING: This script will modify system files. Run it only on a machine
 #          that you intend to use as a dedicated kiosk.
@@ -62,9 +63,20 @@ EOL
 
 chmod +x /usr/local/bin/kiosk-session.sh
 
-# --- 4. Create the X-Session Desktop Entry ---
-echo "[+] Creating X-session entry..."
-cat > /usr/share/xsessions/kiosk.desktop << EOL
+# --- 4. Detect Display Manager and Configure Autologin ---
+echo "[+] Detecting display manager and configuring autologin..."
+
+# Detect which display manager is in use
+if command -v lightdm >/dev/null 2>&1 || [[ -d /etc/lightdm ]]; then
+  echo "[+] LightDM detected. Configuring LightDM autologin..."
+  mkdir -p /etc/lightdm/lightdm.conf.d
+  cat > /etc/lightdm/lightdm.conf.d/60-kiosk-autologin.conf << EOL
+[Seat:*]
+autologin-user=student
+autologin-session=kiosk
+EOL
+  # Create X-session entry for LightDM
+  cat > /usr/share/xsessions/kiosk.desktop << EOL
 [Desktop Entry]
 Name=Kiosk Mode
 Comment=Starts the kiosk browser session
@@ -72,13 +84,55 @@ Exec=/usr/local/bin/kiosk-session.sh
 Type=Application
 EOL
 
-# --- 5. Configure LightDM for Autologin ---
-echo "[+] Configuring autologin for 'student' user..."
-cat > /etc/lightdm/lightdm.conf.d/60-kiosk-autologin.conf << EOL
-[Seat:*]
-autologin-user=student
-autologin-session=kiosk
-EOL
+elif command -v slim >/dev/null 2>&1 || [[ -f /etc/slim.conf ]]; then
+  echo "[+] SLiM detected. Configuring SLiM autologin..."
+  # Backup original slim.conf
+  [[ -f /etc/slim.conf ]] && cp /etc/slim.conf /etc/slim.conf.backup
+  
+  # Configure SLiM for autologin
+  if [[ -f /etc/slim.conf ]]; then
+    sed -i 's/^#\?default_user.*/default_user        student/' /etc/slim.conf
+    sed -i 's/^#\?auto_login.*/auto_login          yes/' /etc/slim.conf
+  fi
+  
+  # Create .xsession for student user (antiX uses this)
+  su - student -c 'cat > ~/.xsession << "XSESS"
+#!/bin/bash
+exec /usr/local/bin/kiosk-session.sh
+XSESS
+chmod +x ~/.xsession'
+
+else
+  echo "[+] No display manager detected. Configuring .xinitrc for startx autologin..."
+  
+  # For systems without a display manager, use .xinitrc
+  su - student -c 'cat > ~/.xinitrc << "XINITRC"
+#!/bin/bash
+exec /usr/local/bin/kiosk-session.sh
+XINITRC
+chmod +x ~/.xinitrc'
+  
+  # Configure autologin via inittab (SysVinit) or getty
+  if [[ -f /etc/inittab ]]; then
+    echo "[+] Configuring SysVinit autologin via inittab..."
+    # Check if autologin is already configured
+    if ! grep -q "student.*startx" /etc/inittab; then
+      # Backup inittab
+      cp /etc/inittab /etc/inittab.backup
+      # Replace getty on tty1 with autologin
+      sed -i 's|^1:.*respawn.*getty.*tty1.*|1:2345:respawn:/bin/login -f student tty1 </dev/tty1 >/dev/tty1 2>&1|' /etc/inittab
+    fi
+    
+    # Create .bash_profile to auto-startx on tty1
+    su - student -c 'cat > ~/.bash_profile << "BASHPROF"
+# Auto-start X on tty1 login
+if [[ -z "$DISPLAY" ]] && [[ $(tty) == "/dev/tty1" ]]; then
+  exec startx
+fi
+BASHPROF
+'
+  fi
+fi
 
 # --- 6. Final Touches ---
 echo "[+] Setting permissions..."
