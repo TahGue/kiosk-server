@@ -21,6 +21,21 @@ function updateCurrentTime() {
     `;
 }
 
+// Toast helpers
+function showToast({ title = 'Notice', message = '', level = 'info', timeout = 3500 } = {}) {
+    const root = document.getElementById('toast-root');
+    if (!root) return;
+    const el = document.createElement('div');
+    el.className = `toast ${level}`;
+    el.innerHTML = `<div class="toast-title">${title}</div><div class="toast-msg">${message}</div>`;
+    root.appendChild(el);
+    setTimeout(() => {
+        el.style.opacity = '0';
+        el.style.transform = 'translateY(6px)';
+        setTimeout(() => el.remove(), 300);
+    }, timeout);
+}
+
 // Fetch server time
 async function fetchServerTime() {
     try {
@@ -59,6 +74,14 @@ function applyConfig(cfg) {
         urlDisplay.textContent = cfg.kioskUrl || 'URL not set';
     }
 
+    // Update iframe source for client view and admin preview
+    if (typeof cfg.kioskUrl === 'string' && cfg.kioskUrl) {
+        const frame = document.getElementById('kiosk-frame');
+        if (frame && frame.src !== cfg.kioskUrl) {
+            frame.src = cfg.kioskUrl;
+        }
+    }
+
     // Behavior flags
     const disableContextMenu = !!cfg.disableContextMenu;
     const disableShortcuts = !!cfg.disableShortcuts;
@@ -68,6 +91,17 @@ function applyConfig(cfg) {
 // Setup SSE to receive config and actions
 function initSSE() {
     const es = new EventSource('/api/stream');
+    // SSE status elements
+    const sseDot = document.getElementById('sse-dot');
+    const sseText = document.getElementById('sse-text');
+    function setSseStatus(state) {
+        if (!sseDot || !sseText) return;
+        sseDot.classList.remove('ok','warn','err');
+        if (state === 'ok') { sseDot.classList.add('ok'); sseText.textContent = 'Connected'; }
+        else if (state === 'warn') { sseDot.classList.add('warn'); sseText.textContent = 'Reconnecting…'; }
+        else { sseDot.classList.add('err'); sseText.textContent = 'Disconnected'; }
+    }
+    es.onopen = () => setSseStatus('ok');
     es.addEventListener('config', (e) => {
         try {
             const cfg = JSON.parse(e.data);
@@ -82,7 +116,11 @@ function initSSE() {
             const payload = JSON.parse(e.data);
             if (payload.type === 'reload') {
                 const frame = document.getElementById('kiosk-frame');
-                if (frame && frame.contentWindow) frame.contentWindow.location.reload();
+                if (frame && frame.contentWindow) {
+                    frame.contentWindow.location.reload();
+                } else {
+                    window.location.reload();
+                }
             } else if (payload.type === 'blackout') {
                 const ov = document.getElementById('blackout-overlay');
                 if (!ov) return;
@@ -93,8 +131,9 @@ function initSSE() {
     });
     es.onerror = (e) => {
         console.warn('SSE connection error. Retrying in 5 seconds...', e);
-        es.close(); // Close the current connection
-        setTimeout(initSSE, 5000); // Reinitialize SSE after delay
+        setSseStatus('warn');
+        es.close();
+        setTimeout(() => { setSseStatus('err'); initSSE(); }, 5000);
     };
 }
 
@@ -136,15 +175,107 @@ function initKiosk() {
     fetchServerTime();
     setInterval(fetchServerTime, 30000);
     
+    // Apply saved theme
+    try {
+        const savedTheme = localStorage.getItem('kioskTheme');
+        if (savedTheme === 'dark') document.body.classList.add('theme-dark');
+    } catch (_) {}
+
     // Conditional kiosk restrictions (only for client view, not admin)
     const isClientView = window.location.pathname.endsWith('/client') || window.location.pathname.endsWith('/client.html');
+    // Set document title depending on mode
+    try {
+        document.title = isClientView ? 'Kiosk Client' : 'Kiosk Admin';
+    } catch (_) {}
     if (isClientView) {
+        // Hide admin-only panels for minimal client view
+        const adminPanels = [
+            'control-panel','hb-panel','deploy-panel','restart-panel','devices-panel','lan-panel','admin-token','btn-reload','toggle-blackout'
+        ];
+        adminPanels.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                // If an input or control, hide its container
+                const container = el.closest?.('.content-panel') || el.closest?.('.admin-row') || el;
+                container.style.display = 'none';
+            }
+        });
+        // Expand stage area for client
+        const stage = document.getElementById('stage');
+        if (stage) stage.style.minHeight = '80vh';
+
         document.addEventListener('contextmenu', (e) => {
             if (window.__kioskFlags?.disableContextMenu) {
                 e.preventDefault();
                 return false;
             }
         });
+
+    // Lightweight SPA navigation by hash
+    const sections = {
+        control: document.getElementById('control-panel'),
+        heartbeat: document.getElementById('hb-panel'),
+        devices: document.getElementById('devices-panel'),
+        network: document.getElementById('lan-panel'),
+        client: document.getElementById('stage'),
+    };
+    const navLinks = Array.from(document.querySelectorAll('.kiosk-nav .nav-btn'));
+
+    function setActiveNav(section) {
+        navLinks.forEach(a => {
+            const s = a.getAttribute('data-section');
+            if (s === section) a.classList.add('active'); else a.classList.remove('active');
+        });
+    }
+
+    function showSection(section) {
+        Object.entries(sections).forEach(([key, el]) => {
+            if (!el) return;
+            el.style.display = (key === section) ? '' : 'none';
+        });
+        setActiveNav(section);
+        try { localStorage.setItem('kioskSelectedSection', section); } catch (_) {}
+        // Ensure SSE is running and frame is visible when switching to client
+        if (section === 'client') {
+            const frame = document.getElementById('kiosk-frame');
+            if (frame && (!frame.src || frame.src === 'about:blank')) {
+                // Use current config display if available
+                const url = document.getElementById('current-url-display')?.textContent || '';
+                if (url && url !== 'URL not set') frame.src = url;
+            }
+        }
+    }
+
+    function applyInitialRoute() {
+        if (isClientView) {
+            showSection('client');
+            return;
+        }
+        const hash = (window.location.hash || '').replace('#', '');
+        let section = sections[hash] ? hash : null;
+        if (!section) {
+            try {
+                const saved = localStorage.getItem('kioskSelectedSection');
+                if (saved && sections[saved]) section = saved;
+            } catch (_) {}
+        }
+        if (!section) section = 'control';
+        showSection(section);
+    }
+
+    window.addEventListener('hashchange', applyInitialRoute);
+    navLinks.forEach(a => {
+        a.addEventListener('click', (e) => {
+            const s = a.getAttribute('data-section');
+            if (s) {
+                // Update hash for deep-linking
+                window.location.hash = s;
+            }
+        });
+    });
+
+    // Apply initial route after DOM ready
+    applyInitialRoute();
 
         document.addEventListener('keydown', (e) => {
             if (window.__kioskFlags?.disableShortcuts) {
@@ -169,13 +300,11 @@ function initKiosk() {
         if (!url) return;
         try {
             await postJson('/api/config', { kioskUrl: url });
+            showToast({ title: 'URL Updated', message: 'Clients will update shortly.', level: 'info' });
         } catch (e) {
             console.error('Failed to update kiosk URL', e);
-            if (e.message.includes('401')) {
-                alert('Failed to update kiosk URL: Authorization failed. Is the Admin Token correct?');
-            } else {
-                alert(`Failed to update kiosk URL: ${e.message}`);
-            }
+            const msg = e.message.includes('401') ? 'Authorization failed. Check Admin Token.' : e.message;
+            showToast({ title: 'Update Failed', message: msg, level: 'error' });
         }
     });
 
@@ -242,21 +371,36 @@ function initKiosk() {
                     <div class="device-id">[SSE] ID: ${device.id.substring(0, 8)}...</div>
                     <div class="device-ip">IP: ${device.ip}</div>
                     <div class="device-agent">Agent: ${device.userAgent.substring(0, 60)}...</div>
+                    <div class="device-agent"><span class="chip ok"><span class="dot"></span> Client Active</span></div>
                     <div class="device-url">URL: ${device.currentUrl || 'Unknown'}</div>
-                    <div class="device-action"><button onclick="setUrlForIp('${device.ip}')">Set URL</button></div>
+                    <div class="device-action">
+                        <button onclick="copyIp('${device.ip}')">Copy IP</button>
+                        <button onclick="openUrlNewTab('${device.currentUrl || ''}')">Open URL</button>
+                        <button onclick="resolveIpHostname('${device.ip}')">Resolve</button>
+                        <button onclick="setUrlForIp('${device.ip}')">Set URL</button>
+                        <button onclick="sshToHost('${device.ip}')">SSH</button>
+                    </div>
                 </div>
             `).join('');
 
             const hbHtml = hb.map(c => `
                 <div class="device-item">
-                    <div class="device-id">[HB] ${c.key} ${c.online ? '<span style="color:#4caf50; margin-left:6px;">● online</span>' : '<span style="color:#999; margin-left:6px;">● offline</span>'}</div>
+                    <div class="device-id">[HB] ${c.key} ${c.online ? '<span class="chip ok"><span class="dot"></span> Online</span>' : '<span class="chip err"><span class="dot"></span> Offline</span>'}</div>
                     <div class="device-ip">IP: ${c.ip || '-'}</div>
                     <div class="device-agent">Host: ${c.hostname || '-'} | Ver: ${c.version || '-'}</div>
                     <div class="device-url">URL: ${c.currentUrl || 'Unknown'}</div>
+                    <div class="device-action">
+                        ${c.ip ? `<button onclick="copyIp('${c.ip}')">Copy IP</button>` : ''}
+                        ${c.currentUrl ? `<button onclick="openUrlNewTab('${c.currentUrl}')">Open URL</button>` : ''}
+                        ${c.ip ? `<button onclick=\"resolveIpHostname('${c.ip}')\">Resolve</button>` : ''}
+                        ${c.ip ? `<button onclick=\"setUrlForIp('${c.ip}')\">Set URL</button>` : ''}
+                        <button onclick="hbReboot('${c.key}')">Reboot</button>
+                        <button onclick="hbShutdown('${c.key}')">Shutdown</button>
+                    </div>
                 </div>
             `).join('');
 
-            devicesListEl.innerHTML = sseHtml + hbHtml;
+            devicesListEl.innerHTML = applyDevicesFilter(sseHtml + hbHtml);
         } catch (error) {
             if (error.message.includes('401')) {
                 devicesListEl.innerHTML = `<p class="error">Authorization failed. Is the Admin Token correct?</p>`;
@@ -265,6 +409,27 @@ function initKiosk() {
             }
         }
     }
+
+    const devicesFilterInput = document.getElementById('devices-filter');
+    function applyDevicesFilter(html) {
+        if (!devicesFilterInput) return html;
+        const q = devicesFilterInput.value.trim().toLowerCase();
+        if (!q) return html;
+        // Filter by wrapping matches only; simple approach: parse DOM after render
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = html;
+        const items = Array.from(wrapper.querySelectorAll('.device-item'));
+        items.forEach(item => {
+            const text = item.textContent.toLowerCase();
+            if (!text.includes(q)) item.remove();
+        });
+        return wrapper.innerHTML || '<p>No devices match your filter.</p>';
+    }
+
+    devicesFilterInput?.addEventListener('input', () => {
+        // Re-render with filter applied
+        fetchAndRenderDevices();
+    });
 
     function startDevicesPolling() {
         if (!devicesListEl) return;
@@ -290,19 +455,59 @@ function initKiosk() {
         const url = prompt(`Enter URL for client IP ${ip}:`);
         if (url) {
             postJson(`/api/config/ip/${ip}`, { kioskUrl: url })
-                .then(response => {
-                    alert(`URL updated for IP ${ip} to ${url}`);
-                    fetchAndRenderDevices(); // Refresh the list
+                .then(() => {
+                    showToast({ title: 'URL Updated', message: `IP ${ip} -> ${url}`, level: 'info' });
+                    fetchAndRenderDevices();
                 })
                 .catch(e => {
                     console.error('Failed to update URL for IP', e);
-                    alert(`Failed to update URL for IP ${ip}: ${e.message}`);
+                    showToast({ title: 'Update Failed', message: e.message, level: 'error' });
                 });
         }
     }
 
-    // Make function available globally for button onclick
+    // Device action helpers
+    async function copyIp(ip) {
+        try { await navigator.clipboard.writeText(ip); showToast({ title: 'Copied IP', message: ip, level: 'info' }); }
+        catch { showToast({ title: 'Copy Failed', message: ip, level: 'warn' }); }
+    }
+    async function resolveIpHostname(ip) {
+        try {
+            const res = await getJson(`/api/lan/resolve/${encodeURIComponent(ip)}`);
+            const name = res && res.hostname ? res.hostname : 'not found';
+            showToast({ title: 'Resolved', message: `${ip} -> ${name}`, level: 'info' });
+        } catch (e) {
+            showToast({ title: 'Resolve Failed', message: String(e.message || e), level: 'error' });
+        }
+    }
+    function openUrlNewTab(url) {
+        if (!url || url === 'Unknown') { showToast({ title: 'No URL', message: 'No URL available for this device.', level: 'warn' }); return; }
+        window.open(url, '_blank');
+    }
+    function sshToHost(ip) {
+        const user = (window.__uiDefaults?.defaultSshUsername || 'student').trim();
+        const cmd = `ssh ${user}@${ip}`;
+        // Copy command for reliability
+        copyIp(cmd);
+        showToast({ title: 'SSH Command Copied', message: cmd, level: 'info' });
+    }
+    async function hbReboot(target) {
+        try { await postJson('/api/heartbeat/command', { target, type: 'reboot', payload: {} }); showToast({ title: 'Reboot Queued', message: target, level: 'info' }); }
+        catch (e) { showToast({ title: 'Reboot Failed', message: String(e.message || e), level: 'error' }); }
+    }
+    async function hbShutdown(target) {
+        try { await postJson('/api/heartbeat/command', { target, type: 'shutdown', payload: {} }); showToast({ title: 'Shutdown Queued', message: target, level: 'info' }); }
+        catch (e) { showToast({ title: 'Shutdown Failed', message: String(e.message || e), level: 'error' }); }
+    }
+
+    // Expose helpers for inline onclick handlers
     window.setUrlForIp = setUrlForIp;
+    window.copyIp = copyIp;
+    window.resolveIpHostname = resolveIpHostname;
+    window.openUrlNewTab = openUrlNewTab;
+    window.sshToHost = sshToHost;
+    window.hbReboot = hbReboot;
+    window.hbShutdown = hbShutdown;
 
     startDevicesPolling();
 
@@ -438,6 +643,24 @@ function initKiosk() {
     // Automatically scan the network on page load for convenience
     scanLan();
 
+    // Header quick actions
+    const btnOpenClient = document.getElementById('btn-open-client');
+    btnOpenClient?.addEventListener('click', () => {
+        window.open('/client', '_blank');
+    });
+    const btnCopyClient = document.getElementById('btn-copy-client');
+    btnCopyClient?.addEventListener('click', async () => {
+        const link = `${window.location.origin}/client`;
+        try { await navigator.clipboard.writeText(link); showToast({ title: 'Copied', message: link, level: 'info' }); }
+        catch { showToast({ title: 'Copy Failed', message: link, level: 'warn' }); }
+    });
+    const btnToggleTheme = document.getElementById('btn-toggle-theme');
+    btnToggleTheme?.addEventListener('click', () => {
+        const dark = document.body.classList.toggle('theme-dark');
+        try { localStorage.setItem('kioskTheme', dark ? 'dark' : 'light'); } catch (_) {}
+        showToast({ title: dark ? 'Dark Mode' : 'Light Mode', message: '', level: 'info' });
+    });
+
     // Open current URL in new tab
     const btnOpenUrl = document.getElementById('btn-open-url');
     btnOpenUrl?.addEventListener('click', () => {
@@ -445,8 +668,20 @@ function initKiosk() {
         if (url !== 'URL not set') {
             window.open(url, '_blank');
         } else {
-            alert('No URL set. Please set a URL first.');
+            showToast({ title: 'No URL', message: 'Set a URL first.', level: 'warn' });
         }
+    });
+
+    // Download start-kiosk.sh prefilled with this server address
+    const btnDownloadClient = document.getElementById('btn-download-client');
+    btnDownloadClient?.addEventListener('click', () => {
+        const base = window.location.origin;
+        const link = document.createElement('a');
+        link.href = `/client/start-kiosk.sh?serverBase=${encodeURIComponent(base)}`;
+        link.download = 'start-kiosk.sh';
+        document.body.appendChild(link);
+        link.click();
+        requestAnimationFrame(() => link.remove());
     });
 
     // Start SSE after wiring UI
@@ -462,10 +697,28 @@ function initKiosk() {
     const chkReboot = document.getElementById('deploy-reboot');
     const deployResult = document.getElementById('deploy-result');
 
-    // Auto-fill server base URL from current location
-    if (inputServerBase) {
-        inputServerBase.value = window.location.origin;
-    }
+    // Auto-fill defaults from server env (and fallback to current origin)
+    (async () => {
+        try {
+            const ui = await getJson('/api/ui-defaults').catch(() => ({}));
+            // expose globally for SSH helper defaults
+            window.__uiDefaults = ui || {};
+            if (inputServerBase) {
+                const envBase = ui.serverBase && ui.serverBase.trim();
+                inputServerBase.value = envBase || window.location.origin;
+            }
+            if (inputUsername && !inputUsername.value) {
+                inputUsername.value = (ui.defaultSshUsername || '').trim();
+            }
+            if (inputPassword && !inputPassword.value) {
+                inputPassword.value = (ui.defaultSshPassword || '').trim();
+            }
+        } catch (_) {
+            if (inputServerBase && !inputServerBase.value) {
+                inputServerBase.value = window.location.origin;
+            }
+        }
+    })();
 
     async function deployToClients() {
         if (!inputUsername || !inputServerBase) return;
@@ -477,8 +730,8 @@ function initKiosk() {
         const hostsRaw = (inputHosts?.value || '').trim();
         const hosts = hostsRaw ? hostsRaw.split(/\r?\n/).map(s => s.trim()).filter(Boolean) : undefined;
 
-        if (!username) { alert('SSH username is required'); return; }
-        if (!serverBase) { alert('Server Base is required'); return; }
+        if (!username) { showToast({ title: 'Missing Field', message: 'SSH username is required.', level: 'warn' }); return; }
+        if (!serverBase) { showToast({ title: 'Missing Field', message: 'Server Base is required.', level: 'warn' }); return; }
 
         if (deployResult) { deployResult.style.display = 'block'; deployResult.textContent = 'Deploying...'; }
         btnDeploy && (btnDeploy.disabled = true);
@@ -503,12 +756,15 @@ function initKiosk() {
                     return `${r.host}: ${r.ok ? 'OK' : 'FAIL'}${errorDetails ? ' - ' + errorDetails.trim() : ''}`;
                 });
                     deployResult.innerHTML = `<strong>Deploy finished</strong><br/>` + lines.join('<br/>');
+                    showToast({ title: 'Deploy Finished', message: 'See details below.', level: 'info' });
                 } else {
                     deployResult.textContent = 'Deploy finished (no details)';
+                    showToast({ title: 'Deploy Finished', message: 'No details returned.', level: 'info' });
                 }
             }
         } catch (err) {
             if (deployResult) deployResult.textContent = `Deploy failed: ${err.message || err}`;
+            showToast({ title: 'Deploy Failed', message: String(err.message || err), level: 'error' });
         } finally {
             btnDeploy && (btnDeploy.disabled = false);
         }
@@ -530,7 +786,7 @@ function initKiosk() {
         const hostsRaw = (inputRestartHosts?.value || '').trim();
         const hosts = hostsRaw ? hostsRaw.split(/\r?\n/).map(s => s.trim()).filter(Boolean) : undefined;
 
-        if (!username) { alert('SSH username is required'); return; }
+        if (!username) { showToast({ title: 'Missing Field', message: 'SSH username is required.', level: 'warn' }); return; }
 
         if (restartResult) { restartResult.style.display = 'block'; restartResult.textContent = 'Restarting clients...'; }
         btnRestart && (btnRestart.disabled = true);
@@ -546,19 +802,20 @@ function initKiosk() {
                         let errorDetails = r.error || r.stderr || '';
                         return `${r.host}: ${r.ok ? 'OK - Restarted' : 'FAIL'}${errorDetails ? ' - ' + errorDetails.trim() : ''}`;
                     });
-                    restartResult.innerHTML = `<strong>Restart finished</strong><br/>` + lines.join('<br/>');
+                    restartResult.innerHTML = `<strong>Restart finished</strong><br/>` + lines.join('<br/>' );
+                    showToast({ title: 'Restart Finished', message: 'See details below.', level: 'info' });
                 } else {
                     restartResult.textContent = 'Restart finished (no details)';
+                    showToast({ title: 'Restart Finished', message: 'No details returned.', level: 'info' });
                 }
             }
         } catch (err) {
             if (restartResult) restartResult.textContent = `Restart failed: ${err.message || err}`;
+            showToast({ title: 'Restart Failed', message: String(err.message || err), level: 'error' });
         } finally {
             btnRestart && (btnRestart.disabled = false);
         }
     }
-
-    btnRestart?.addEventListener('click', restartClients);
 
     // Heartbeat panel wiring
     const hbListEl = document.getElementById('hb-list');
@@ -597,18 +854,20 @@ function initKiosk() {
         const target = (hbTarget?.value || '').trim();
         const type = (hbCmdType?.value || '').trim();
         const payloadRaw = (hbCmdPayload?.value || '').trim();
-        if (!target || !type) { alert('Target and command type are required'); return; }
+        if (!target || !type) { showToast({ title: 'Missing Fields', message: 'Target and command type are required.', level: 'warn' }); return; }
         let payload = {};
         if (payloadRaw) {
-            try { payload = JSON.parse(payloadRaw); } catch (e) { alert('Payload must be valid JSON'); return; }
+            try { payload = JSON.parse(payloadRaw); } catch (e) { showToast({ title: 'Invalid JSON', message: 'Payload must be valid JSON.', level: 'warn' }); return; }
         }
         hbSendBtn.disabled = true;
         if (hbResult) { hbResult.style.display = 'block'; hbResult.textContent = 'Sending...'; }
         try {
             const resp = await postJson('/api/heartbeat/command', { target, type, payload });
             if (hbResult) hbResult.textContent = `Queued. Total queued: ${resp.queued}`;
+            showToast({ title: 'Command Queued', message: `Queued for ${target}.`, level: 'info' });
         } catch (err) {
             if (hbResult) hbResult.textContent = `Failed: ${err.message}`;
+            showToast({ title: 'Command Failed', message: String(err.message || err), level: 'error' });
         } finally {
             hbSendBtn.disabled = false;
         }

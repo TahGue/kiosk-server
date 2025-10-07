@@ -95,6 +95,101 @@ The admin dashboard now includes a **Heartbeat Clients** panel where you can:
 - See a list of all registered clients and their online status.
 - Send commands (`reboot`, `update_url`) to a specific client.
 
+### Heartbeat API Usage (Examples)
+
+Below are practical examples to interact with the heartbeat API directly. If you set `ADMIN_TOKEN` in `kiosk-server/.env`, include it as `x-admin-token` on protected routes.
+
+#### List clients
+
+```bash
+# Without admin token (works if ADMIN_TOKEN is not set)
+curl -s http://<SERVER_IP>:4000/api/heartbeat/clients | jq .
+
+# With admin token
+curl -s http://<SERVER_IP>:4000/api/heartbeat/clients \
+  -H "x-admin-token: <YOUR_ADMIN_TOKEN>" | jq .
+```
+
+#### Send a heartbeat (from a device)
+
+```bash
+curl -s -X POST http://<SERVER_IP>:4000/api/heartbeat \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "id": "my-device-123",
+        "hostname": "my-device",
+        "version": "kiosk-client-1.1.0",
+        "status": "ok",
+        "currentUrl": "https://example.com"
+      }' | jq .
+```
+
+The response includes any queued commands and the effective config for the device:
+
+```json
+{
+  "ok": true,
+  "time": "2025-10-07T05:45:00.000Z",
+  "config": { "kioskUrl": "https://example.com", "title": "Kiosk Display", ... },
+  "commands": [ { "type": "update_url", "payload": { "url": "https://new" }, "createdAt": "..." } ]
+}
+```
+
+#### Queue a command for a device
+
+Note the payload shape: top-level `type` and `payload`.
+
+```bash
+# Update URL for a target (id or IP)
+curl -s -X POST http://<SERVER_IP>:4000/api/heartbeat/command \
+  -H 'Content-Type: application/json' \
+  -H 'x-admin-token: <YOUR_ADMIN_TOKEN>' \
+  -d '{
+        "target": "my-device-123",
+        "type": "update_url",
+        "payload": { "url": "https://new.example.com" }
+      }' | jq .
+
+# Reboot a device
+curl -s -X POST http://<SERVER_IP>:4000/api/heartbeat/command \
+  -H 'Content-Type: application/json' \
+  -H 'x-admin-token: <YOUR_ADMIN_TOKEN>' \
+  -d '{
+        "target": "my-device-123",
+        "type": "reboot",
+        "payload": {}
+      }' | jq .
+```
+
+#### Minimal client examples
+
+```bash
+# Bash (Linux) minimal heartbeat loop
+SERVER_BASE="http://<SERVER_IP>:4000"
+ID="$(hostname)-$(cat /etc/machine-id 2>/dev/null || echo unknown)"
+while true; do
+  payload=$(cat <<EOF
+{"id":"$ID","hostname":"$(hostname)","version":"kiosk-client-1.1.0","status":"ok"}
+EOF
+)
+  resp=$(curl -fsS -X POST "$SERVER_BASE/api/heartbeat" -H 'Content-Type: application/json' -d "$payload" || true)
+  # Optionally parse and act on commands using jq
+  # echo "$resp" | jq -r '.commands[] | .type'
+  sleep 15
+done
+```
+
+```powershell
+# PowerShell (Windows) minimal heartbeat loop
+$SERVER_BASE = "http://<SERVER_IP>:4000"
+$id = "$env:COMPUTERNAME"
+while ($true) {
+  $payload = @{ id=$id; hostname=$env:COMPUTERNAME; version="ps-client-1.0"; status="ok" } | ConvertTo-Json
+  try { Invoke-RestMethod -Uri "$SERVER_BASE/api/heartbeat" -Method Post -Body $payload -ContentType "application/json" } catch {}
+  Start-Sleep -Seconds 15
+}
+```
+
 ## Client Management and Deployment
 
 The admin UI includes panels for deploying scripts and restarting clients via SSH.

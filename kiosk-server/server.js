@@ -83,6 +83,18 @@ const envDefaults = {
 const persisted = loadConfigFromDisk();
 const kioskConfig = Object.assign({}, envDefaults, persisted || {});
 
+// Serve SPA for client path as well
+app.get(['/client', '/client.html'], (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// UI defaults from environment (for admin dashboard prefill)
+const uiDefaults = {
+  serverBase: process.env.SERVER_BASE || '',
+  defaultSshUsername: process.env.DEFAULT_SSH_USERNAME || '',
+  defaultSshPassword: process.env.DEFAULT_SSH_PASSWORD || ''
+};
+
 // SSE clients registry
 const sseClients = new Map(); // Use a Map to store more client data
 
@@ -159,6 +171,139 @@ function broadcast(event, payload) {
 // API Routes
 app.get('/api/time', (req, res) => {
   res.json({ time: new Date().toISOString() });
+});
+
+// Get current kiosk configuration
+app.get('/api/config', (req, res) => {
+  res.json(kioskConfig);
+});
+
+// Update kiosk configuration and broadcast to clients
+app.post('/api/config', (req, res) => {
+  try {
+    const updates = req.body || {};
+    Object.assign(kioskConfig, updates);
+    saveConfigToDisk(kioskConfig);
+    broadcast('config', kioskConfig);
+    res.json({ ok: true, config: kioskConfig });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+// Set per-IP configuration override (currently supports kioskUrl)
+app.post('/api/config/ip/:ip', (req, res) => {
+  try {
+    const ip = req.params.ip;
+    const body = req.body || {};
+    const existing = clientSpecificConfigs.get(ip) || {};
+    const merged = Object.assign({}, existing, body);
+    clientSpecificConfigs.set(ip, merged);
+    saveClientConfigsToDisk();
+    res.json({ ok: true, ip, config: merged });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+// UI defaults endpoint to help prefill admin inputs
+app.get('/api/ui-defaults', (req, res) => {
+  res.json(uiDefaults);
+});
+
+// Server-Sent Events stream for admin/client UI
+app.get('/api/stream', (req, res) => {
+  // Standard SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  // Register client
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const client = {
+    id,
+    res,
+    ip: normalizeIp(req.ip),
+    userAgent: req.headers['user-agent'] || '',
+    connectedAt: new Date().toISOString(),
+    currentUrl: null
+  };
+  sseClients.set(id, client);
+
+  // Send initial config event
+  try {
+    const init = `event: config\n` +
+                 `data: ${JSON.stringify(kioskConfig)}\n\n`;
+    res.write(init);
+  } catch (_) {}
+
+  // Keep-alive ping every 25s
+  const ping = setInterval(() => {
+    try { res.write(`: ping\n\n`); } catch (_) {}
+  }, 25000);
+
+  // Cleanup on close
+  req.on('close', () => {
+    clearInterval(ping);
+    sseClients.delete(id);
+    try { res.end(); } catch (_) {}
+  });
+});
+
+// List connected SSE clients (lightweight info for admin UI)
+app.get('/api/devices', (req, res) => {
+  const list = Array.from(sseClients.values()).map(c => ({
+    id: c.id,
+    ip: c.ip,
+    userAgent: c.userAgent,
+    connectedAt: c.connectedAt,
+    currentUrl: c.currentUrl || null
+  }));
+  res.json(list);
+});
+
+// Broadcast UI actions (e.g., reload, blackout)
+app.post('/api/action', (req, res) => {
+  const { type, value } = req.body || {};
+  if (!type) return res.status(400).json({ error: 'type is required' });
+  try {
+    broadcast('action', { type, value: value ?? true });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+// Serve a templated kiosk client script with SERVER_BASE injected
+app.get('/client/start-kiosk.sh', (req, res) => {
+  try {
+    const scriptPath = path.join(__dirname, '..', 'kiosk-client', 'start-kiosk.sh');
+    let content = fs.readFileSync(scriptPath, 'utf8');
+
+    // Determine server base in order of precedence: query -> env -> current origin
+    const host = req.headers['x-forwarded-host'] || req.headers.host;
+    const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0];
+    const origin = `${proto}://${host}`;
+    const serverBase = (req.query.serverBase || process.env.SERVER_BASE || origin).toString();
+
+    // Replace the SERVER_BASE assignment line
+    content = content.replace(
+      /^(\s*SERVER_BASE=)"[^"]*"/m,
+      `$1"${serverBase}"`
+    );
+
+    // Add a header comment indicating templated generation
+    const header = `# --- Templated by kiosk-server at ${new Date().toISOString()} ---\n` +
+                   `# SERVER_BASE=${serverBase}\n`;
+    content = content.replace(/^#!\/bin\/bash\n/, m => m + header);
+
+    res.setHeader('Content-Type', 'text/x-shellscript');
+    res.setHeader('Content-Disposition', 'attachment; filename="start-kiosk.sh"');
+    res.send(content);
+  } catch (err) {
+    res.status(500).send(`# Error generating script: ${String(err?.message || err)}\n`);
+  }
 });
 
 // Heartbeat endpoint for bash clients
@@ -748,6 +893,32 @@ app.get('/api/lan/arp-debug', async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Simple ARP endpoint (no raw output), for UI consumption
+app.get('/api/lan/arp', async (req, res) => {
+  try {
+    exec('arp -a', { windowsHide: true }, (err, stdout) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      const devices = parseArpTable(stdout || '');
+      res.json({ parsed: devices, count: devices.length });
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err?.message || err) });
+  }
+});
+
+// Resolve hostname for a given IP
+app.get('/api/lan/resolve/:ip', async (req, res) => {
+  try {
+    const ip = req.params.ip;
+    const hostname = await resolveHostname(ip);
+    res.json({ ip, hostname });
+  } catch (err) {
+    res.status(500).json({ error: String(err?.message || err) });
   }
 });
 

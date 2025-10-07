@@ -338,7 +338,7 @@
                 const arpData = await arpRes.json();
                 
                 // Merge heartbeat clients with ARP devices
-                const hbClients = hbData.clients || [];
+                const hbClients = Array.isArray(hbData) ? hbData : (hbData.clients || []);
                 const arpDevices = arpData.parsed || [];
                 
                 // Create a map of heartbeat clients by IP
@@ -456,10 +456,8 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             target: deviceId,
-                            command: {
-                                type: 'update_url',
-                                payload: { url }
-                            }
+                            type: 'update_url',
+                            payload: { url }
                         })
                     });
                 } catch (error) {
@@ -492,10 +490,8 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             target: device.id || device.ip,
-                            command: {
-                                type: 'update_url',
-                                payload: { url }
-                            }
+                            type: 'update_url',
+                            payload: { url }
                         })
                     });
                 } catch (error) {
@@ -527,10 +523,8 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             target: deviceId,
-                            command: {
-                                type: 'reboot',
-                                payload: {}
-                            }
+                            type: 'reboot',
+                            payload: {}
                         })
                     });
                 } catch (error) {
@@ -562,10 +556,8 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             target: deviceId,
-                            command: {
-                                type: 'shutdown',
-                                payload: {}
-                            }
+                            type: 'shutdown',
+                            payload: {}
                         })
                     });
                 } catch (error) {
@@ -585,15 +577,11 @@
             showMessage('warning', 'Scanning network... This may take a minute.');
 
             try {
-                const res = await fetch('/api/scan/network', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        subnet: subnet || undefined,
-                        mode: mode
-                    })
-                });
-
+                // Build query string for GET /api/lan/scan
+                const params = new URLSearchParams();
+                if (mode) params.set('mode', mode);
+                if (subnet) params.set('subnet', subnet);
+                const res = await fetch(`/api/lan/scan?${params.toString()}`);
                 const data = await res.json();
                 
                 if (data.devices && data.devices.length > 0) {
@@ -655,9 +643,11 @@
                 const res = await fetch('/api/lan/interfaces');
                 const data = await res.json();
                 
-                if (data.interfaces && data.interfaces.length > 0) {
+                // Support both array and {interfaces: [...]} shapes
+                const ifacesArr = Array.isArray(data) ? data : (data.interfaces || []);
+                if (ifacesArr && ifacesArr.length > 0) {
                     // Find the first non-loopback interface with an IPv4 address
-                    for (const iface of data.interfaces) {
+                    for (const iface of ifacesArr) {
                         if (iface.address && iface.address.includes('.') && !iface.address.startsWith('127.')) {
                             // Convert IP to subnet (e.g., 172.168.1.5 -> 172.168.1.0/24)
                             const parts = iface.address.split('.');
