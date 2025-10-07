@@ -15,6 +15,8 @@
     "monitor": "node scripts/monitor.js",
     "setup:pm2": "bash scripts/setup-pm2.sh",
     "setup:systemd": "sudo bash scripts/setup-systemd.sh",
+    "test:server": "node test-server.js",
+    "deploy:mustaqbal": "bash scripts/deploy-mustaqbal.sh",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {

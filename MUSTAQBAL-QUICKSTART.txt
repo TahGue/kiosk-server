@@ -1,0 +1,128 @@
+╔════════════════════════════════════════════════════════════════╗
+║           MUSTAQBAL KIOSK SYSTEM - QUICK REFERENCE             ║
+║         50-100 AntiX Clients | User: tahar | Pass: tahar      ║
+╚════════════════════════════════════════════════════════════════╝
+
+📦 SERVER SETUP (Do once)
+─────────────────────────────────────────────────────────────────
+cd kiosk-server
+cp env.mustaqbal.template .env
+nano .env                    # Set YOUR server IP
+npm install
+npm start                    # Or: npm run pm2:start
+
+✓ Server: http://YOUR-IP:4000
+✓ Admin: http://YOUR-IP:4000 (no password needed)
+
+─────────────────────────────────────────────────────────────────
+🚀 DEPLOY TO ALL 100 CLIENTS (Automatic)
+─────────────────────────────────────────────────────────────────
+cd kiosk-server/scripts
+chmod +x deploy-mustaqbal.sh
+
+# Auto-discover and deploy to all
+./deploy-mustaqbal.sh discover
+
+# Or deploy to IP range 192.168.1.50-150
+./deploy-mustaqbal.sh range 192.168.1 50 150
+
+# Or use IP list file
+./deploy-mustaqbal.sh list ips.txt
+
+✓ Script auto-installs everything
+✓ Clients auto-reboot and start kiosk
+✓ Check admin panel → Devices to verify
+
+─────────────────────────────────────────────────────────────────
+🎛️  DAILY OPERATIONS
+─────────────────────────────────────────────────────────────────
+Change URL for ALL:        Admin Panel → Control → Enter URL
+Change URL for ONE:        Admin Panel → Devices → Set URL
+Monitor Status:            Admin Panel → Devices (green=online)
+Reload All Browsers:       Admin Panel → Control → Reload All
+Enable Blackout:           Admin Panel → Control → Blackout
+Scan Network:              Admin Panel → Network → Scan
+
+─────────────────────────────────────────────────────────────────
+⚙️  CONFIGURATION (.env file)
+─────────────────────────────────────────────────────────────────
+PORT=4000
+KIOSK_URL=https://www.mustaqbal.hb.local
+SERVER_BASE=http://192.168.1.10:4000    ← YOUR SERVER IP!
+DEFAULT_SSH_USERNAME=tahar
+DEFAULT_SSH_PASSWORD=tahar
+MAX_SSE_CLIENTS=120                      ← For 100+ devices
+MAX_HB_CLIENTS=120
+TIMEZONE=Asia/Baghdad
+
+─────────────────────────────────────────────────────────────────
+🔧 TROUBLESHOOTING
+─────────────────────────────────────────────────────────────────
+Test server logic:         npm run test:server
+Check server status:       curl http://localhost:4000/api/time
+View connected devices:    curl http://localhost:4000/api/devices
+Monitor PM2:               pm2 monit
+View logs:                 pm2 logs
+
+Client not showing up:
+  - Check device is on and network connected
+  - SSH to device: ssh tahar@IP
+  - Check script: ps aux | grep start-kiosk
+  - Restart: sudo reboot
+
+URL not updating:
+  - Check device is green in Devices panel
+  - Click "Reload All" in admin panel
+  - Verify URL has https:// prefix
+
+─────────────────────────────────────────────────────────────────
+📱 MOBILE ACCESS
+─────────────────────────────────────────────────────────────────
+Open on phone/tablet: http://YOUR-SERVER-IP:4000
+✓ Full control from anywhere on LAN
+✓ No password needed (internal network)
+
+─────────────────────────────────────────────────────────────────
+🛠️  COMMANDS CHEAT SHEET
+─────────────────────────────────────────────────────────────────
+npm start                      Start server
+npm run dev                    Start with auto-reload
+npm run pm2:start              Production mode with PM2
+npm run test:server            Test server logic
+npm run deploy:mustaqbal       Deploy to clients
+
+chmod +x scripts/*.sh          Make scripts executable
+./deploy-mustaqbal.sh          Interactive deployment menu
+
+─────────────────────────────────────────────────────────────────
+📚 DOCUMENTATION
+─────────────────────────────────────────────────────────────────
+Complete Setup:          MUSTAQBAL-SETUP.md
+Environment Variables:   ENV-SETUP.md
+Troubleshooting:         TROUBLESHOOTING.md
+Production Deploy:       DEPLOYMENT.md
+General README:          README.md
+
+─────────────────────────────────────────────────────────────────
+✅ CHECKLIST
+─────────────────────────────────────────────────────────────────
+□ Server IP set in .env (SERVER_BASE)
+□ Server running: npm start
+□ All 100 clients deployed
+□ All devices show green in admin panel
+□ Test URL change works on all screens
+□ Backup .env and config/ folder
+
+─────────────────────────────────────────────────────────────────
+🎯 YOUR SPECIFIC SETUP
+─────────────────────────────────────────────────────────────────
+Network:        mustaqbal.local LAN
+Devices:        50-100 AntiX Linux
+Credentials:    tahar / tahar (all machines)
+Default URL:    https://www.mustaqbal.hb.local
+Timezone:       Asia/Baghdad
+No Auth:        Internal LAN, no ADMIN_TOKEN needed
+
+╔════════════════════════════════════════════════════════════════╗
+║  SUPPORT: Read TROUBLESHOOTING.md or run: npm run test:server ║
+╚════════════════════════════════════════════════════════════════╝
