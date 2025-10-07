@@ -1,324 +1,348 @@
-# Kiosk Server
+# Kiosk Server 🖥️
 
-A simple kiosk server built with Node.js and Express. This application provides a full-screen kiosk interface that can be displayed on a dedicated screen, with an admin panel to manage the content URL.
+A powerful, production-ready kiosk management system for controlling and monitoring multiple display screens from a central admin dashboard. Perfect for digital signage, information displays, and public terminals.
 
-## Features
+## ✨ Key Features
 
-- **Full-Screen Kiosk Display**: Displays content in full-screen mode on client devices.
-- **Admin Control Panel**: Change the displayed URL directly from the admin page at `http://localhost:4000`.
-- **Real-Time Clock Display**: Shows current time on the admin interface.
-- **Server Time Synchronization**: Periodically syncs time with the server.
-- **Responsive Design**: Adapts to different screen sizes.
-- **Basic Security Measures**: Options to disable context menus and shortcuts in kiosk mode.
-- **Advanced Network Device Scanning**: Comprehensive multi-method device discovery with OS detection, service identification, and MAC vendor lookup.
-- **Persistent Configuration**: URL changes are saved to disk and survive server restarts.
-- **Client URL Update Handling**: Kiosk clients check for URL changes periodically and update when a new URL is set.
-- **Client Heartbeat and Remote Control**: Bash/PowerShell clients can send heartbeats to the server, appear as 'online' in the UI, and receive commands like `reboot` or `update_url`.
-- **Remote Deployment and Restart**: Deploy the client script and restart kiosk devices directly from the admin UI via SSH.
-- **Per-IP URL Configuration**: Set specific URLs for individual client IPs from the admin panel.
+- **🎛️ Central Control** - Manage all kiosks from one web interface
+- **🔄 Real-time Updates** - Instant URL changes via Server-Sent Events (SSE)
+- **📊 Device Monitoring** - Track online/offline status of all kiosks
+- **🌐 Network Discovery** - Auto-detect devices on your network
+- **🚀 Easy Deployment** - One-click setup scripts for clients
+- **🔒 Secure** - Admin token protection, rate limiting, input validation
+- **📱 Responsive UI** - Works on desktop, tablet, and mobile
 
-## Prerequisites
+## 🚀 Quick Start
 
-- Node.js (v14 or later)
-- npm (comes with Node.js)
-
-## Installation
-
-1. Clone or download this repository to your server machine.
-2. Navigate to the `kiosk-server` directory:
-   ```bash
-   cd kiosk-server
-   ```
-3. Install dependencies:
-   ```bash
-   npm install
-   ```
-   ```bash
-   npm run dev
-   ```
-   Or start in production mode:
-   ```bash
-    npm start
-  ```
-
-## Offline APT Repository (for LAN/offline clients)
-
-You can host a lightweight APT repo on the kiosk server so clients (Linux Mint/Ubuntu) can install required packages without Internet.
-
-Steps:
-
-1. Collect `.deb` packages (e.g., `firefox`, `midori`, `curl`, `bcmwl-kernel-source`, legacy `nvidia-driver-340`, etc.) into a local folder.
-2. Run the helper script to build `Packages` index and place files under `kiosk-server/public/repo/`:
-
-   ```bash
-   cd kiosk-server
-   bash scripts/prepare-offline-repo.sh /path/to/deb-folder
-   ```
-
-3. Start the kiosk server. The repo will be reachable at `http://<server-ip>:4000/repo`.
-
-Client usage:
-
-- During root setup, the updated `kiosk-client/start-kiosk.sh` attempts to detect and add the local repo automatically if the server is reachable. It writes `/etc/apt/sources.list.d/kiosk-local.list` with:
-
-  ```
-  deb [trusted=yes] http://<server-ip>:4000/repo ./
-  ```
-
-- If not reachable during setup, you can add it manually on the client:
-
-  ```bash
-  echo "deb [trusted=yes] http://<server-ip>:4000/repo ./" | sudo tee /etc/apt/sources.list.d/kiosk-local.list
-  sudo apt-get update
-  sudo apt-get install -y firefox midori curl
-  ```
-
-Notes:
-
-- The script uses `dpkg-scanpackages` (from `dpkg-dev`) to generate `Packages` index.
-- Packages are served as static files by Express from `public/repo/`.
-- Keep your `.deb` set aligned with client distro version for best compatibility.
-
-## Heartbeat and Remote Control
-
-The server includes a heartbeat system for monitoring and controlling non-browser clients (like simple bash or PowerShell scripts).
-
-### Heartbeat API
-
-- **`POST /api/heartbeat`**: A client sends a JSON payload with its status (`id`, `hostname`, `version`, `status`, `currentUrl`). The server registers the client and responds with any queued commands.
-- **`GET /api/heartbeat/clients`**: Returns a list of all registered heartbeat clients, including their online status.
-- **`POST /api/heartbeat/command`**: Queues a command for a specific client. Requires a payload like `{ "target": "client-key", "type": "reboot", "payload": {} }`.
-
-### Heartbeat UI
-
-The admin dashboard now includes a **Heartbeat Clients** panel where you can:
-- See a list of all registered clients and their online status.
-- Send commands (`reboot`, `update_url`) to a specific client.
-
-### Heartbeat API Usage (Examples)
-
-Below are practical examples to interact with the heartbeat API directly. If you set `ADMIN_TOKEN` in `kiosk-server/.env`, include it as `x-admin-token` on protected routes.
-
-#### List clients
+### 1. Install & Run the Server (5 minutes)
 
 ```bash
-# Without admin token (works if ADMIN_TOKEN is not set)
-curl -s http://<SERVER_IP>:4000/api/heartbeat/clients | jq .
+# Clone the repository
+git clone https://github.com/yourusername/kiosk-server.git
+cd kiosk-server
 
-# With admin token
-curl -s http://<SERVER_IP>:4000/api/heartbeat/clients \
-  -H "x-admin-token: <YOUR_ADMIN_TOKEN>" | jq .
+# Install dependencies
+npm install
+
+# Copy environment config
+cp .env.example .env
+
+# Start the server
+npm start
 ```
 
-#### Send a heartbeat (from a device)
+✅ **Server is now running at http://localhost:4000**
+
+### 2. Open Admin Dashboard
+
+1. Open your browser and go to **http://localhost:4000**
+2. You'll see the admin dashboard with these sections:
+   - **Control** - Change the URL displayed on all kiosks
+   - **Devices** - See connected kiosks and their status
+   - **Network** - Scan for devices on your network
+   - **Client** - Preview what kiosks will display
+
+### 3. Connect Your First Kiosk (2 minutes)
+
+**Option A: Quick Test (Same Computer)**
+1. In the admin panel, set a URL (e.g., `https://google.com`)
+2. Open a new browser tab to **http://localhost:4000/client**
+3. You'll see the URL you set - this is what kiosks display!
+
+**Option B: Real Kiosk Setup (Another Computer)**
+1. On the kiosk computer, open browser to `http://YOUR-SERVER-IP:4000/client`
+2. Press F11 for fullscreen (kiosk mode)
+3. The kiosk will now follow URL changes from admin panel
+
+**Option C: Linux Kiosk with Auto-start**
+```bash
+# On the Linux kiosk machine
+wget http://YOUR-SERVER-IP:4000/client/start-kiosk.sh
+chmod +x start-kiosk.sh
+./start-kiosk.sh
+```
+
+## 📋 Prerequisites
+
+- **Node.js 16+** and npm (check with `node -v`)
+- **Linux** for kiosk clients (Ubuntu/Debian recommended)
+- **Chrome/Firefox** for display
+
+## 🎯 Common Use Cases
+
+### Digital Signage
+```bash
+# Set a rotating display of websites
+1. Set URL to your slideshow/dashboard
+2. Connect TVs/monitors as kiosk clients
+3. Control all screens from your phone/computer
+```
+
+### School Computer Lab
+```bash
+# Deploy educational content to 30+ computers
+1. Run server on teacher's computer
+2. Deploy client script to all student PCs
+3. Change displayed content instantly for all
+```
+
+### Information Kiosk
+```bash
+# Public information terminals
+1. Set URL to your information portal
+2. Enable blackout during closed hours
+3. Monitor device status remotely
+```
+
+## 🔧 Detailed Setup Guide
+
+### Step 1: Configure the Server
+
+Edit `.env` file with your settings:
 
 ```bash
-curl -s -X POST http://<SERVER_IP>:4000/api/heartbeat \
-  -H 'Content-Type: application/json' \
-  -d '{
-        "id": "my-device-123",
-        "hostname": "my-device",
-        "version": "kiosk-client-1.1.0",
-        "status": "ok",
-        "currentUrl": "https://example.com"
-      }' | jq .
+# Basic Settings
+PORT=4000                    # Server port
+ADMIN_TOKEN=mysecrettoken   # Protect admin functions (optional)
+
+# Default Display
+KIOSK_URL=https://example.com  # Default URL for kiosks
+KIOSK_TITLE=My Kiosk System    # Browser title
+
+# Security (optional)
+MAX_SSE_CLIENTS=100          # Max simultaneous connections
+MAX_HEARTBEAT_RATE=120       # Rate limiting
 ```
 
-The response includes any queued commands and the effective config for the device:
+### Step 2: Setup Kiosk Clients
 
-```json
-{
-  "ok": true,
-  "time": "2025-10-07T05:45:00.000Z",
-  "config": { "kioskUrl": "https://example.com", "title": "Kiosk Display", ... },
-  "commands": [ { "type": "update_url", "payload": { "url": "https://new" }, "createdAt": "..." } ]
-}
+#### **Windows Kiosk**
+1. Open Chrome/Edge in kiosk mode:
+   ```cmd
+   chrome --kiosk http://SERVER-IP:4000/client
+   ```
+
+#### **Linux Kiosk (Recommended)**
+1. Download the setup script from admin panel or:
+   ```bash
+   curl -O http://SERVER-IP:4000/client/start-kiosk.sh
+   chmod +x start-kiosk.sh
+   ./start-kiosk.sh
+   ```
+
+2. The script will:
+   - Install Chrome if needed
+   - Configure auto-start on boot
+   - Handle network reconnection
+   - Send heartbeat status to server
+
+#### **Raspberry Pi Kiosk**
+```bash
+# Install Raspberry Pi OS Lite
+# Then run:
+wget http://SERVER-IP:4000/client/start-kiosk.sh
+sudo bash start-kiosk.sh
 ```
 
-#### Queue a command for a device
+### Step 3: Manage from Admin Panel
 
-Note the payload shape: top-level `type` and `payload`.
+1. **Change URL for All Kiosks:**
+   - Go to Control panel
+   - Enter new URL
+   - Click "Switch URL"
+   - All kiosks update instantly!
+
+2. **Monitor Devices:**
+   - Check Devices panel
+   - Green = Online, Red = Offline
+   - See IP addresses and last seen time
+
+3. **Per-Device Control:**
+   - Click "Set URL" next to a device
+   - Enter custom URL for that device only
+   - Use for different content on different screens
+
+4. **Network Scan:**
+   - Go to Network panel
+   - Click "Scan Network"
+   - Discover all devices on your LAN
+   - Deploy to multiple devices at once
+
+## 📡 Admin Dashboard Features
+
+### Control Panel
+- Set URL for all kiosks at once
+- Enable/disable blackout mode
+- Reload all browsers remotely
+
+### Devices Panel  
+- View all connected kiosks
+- See real-time online/offline status
+- Set custom URL per device
+- Copy device IPs
+- SSH to devices (Linux)
+- Remote reboot/shutdown
+
+### Network Panel
+- Scan your network for devices
+- Auto-detect device types (PC, printer, router)
+- See MAC addresses and manufacturers
+- One-click deploy to discovered devices
+
+### Heartbeat Panel
+- Monitor bash/PowerShell script clients
+- Send remote commands
+- Track client versions and status
+
+## 🚨 Troubleshooting
+
+### Kiosk Won't Connect
+```bash
+# Check server is running
+curl http://SERVER-IP:4000/api/time
+
+# Check firewall
+sudo ufw allow 4000  # Linux
+# Windows: Add firewall rule for port 4000
+
+# Check server logs
+npm run dev  # Shows detailed logs
+```
+
+### URL Changes Not Applying
+- Refresh the kiosk browser (Ctrl+F5)
+- Check Devices panel - is the kiosk shown as online?
+- Ensure no ADMIN_TOKEN is set (or provide it in settings)
+
+### Linux Client Issues
+```bash
+# Check if script is running
+ps aux | grep chromium
+
+# View client logs
+journalctl -f  # System logs
+
+# Restart client
+sudo systemctl restart kiosk-client  # If using systemd
+```
+
+### Can't Access from Other Computers
+- Use your actual IP, not `localhost`
+- Check Windows Firewall / Linux iptables
+- Ensure server listens on all interfaces (not just 127.0.0.1)
+
+## 🔒 Security Features
+
+- **Admin Token Protection** - Set `ADMIN_TOKEN` in `.env` to password-protect admin functions
+- **Rate Limiting** - Automatic protection against abuse (120 requests/minute per IP)
+- **Input Validation** - All URLs and IPs are validated
+- **CORS Control** - Configure allowed origins for API access  
+- **Resource Limits** - Prevents memory exhaustion attacks
+- **Auto-cleanup** - Stale connections cleaned every 5 minutes
+
+## 🚀 Production Deployment
+
+### Quick Deploy with PM2
+```bash
+npm install -g pm2
+pm run pm2:start
+pm2 save
+pm2 startup  # Auto-start on boot
+```
+
+### Full Production Guide
+See [DEPLOYMENT.md](DEPLOYMENT.md) for:
+- Nginx reverse proxy setup
+- SSL/HTTPS configuration  
+- Systemd service setup
+- Monitoring and logging
+- Performance tuning
+
+## 💻 Development
 
 ```bash
-# Update URL for a target (id or IP)
-curl -s -X POST http://<SERVER_IP>:4000/api/heartbeat/command \
-  -H 'Content-Type: application/json' \
-  -H 'x-admin-token: <YOUR_ADMIN_TOKEN>' \
-  -d '{
-        "target": "my-device-123",
-        "type": "update_url",
-        "payload": { "url": "https://new.example.com" }
-      }' | jq .
+# Run with auto-reload
+npm run dev
 
-# Reboot a device
-curl -s -X POST http://<SERVER_IP>:4000/api/heartbeat/command \
-  -H 'Content-Type: application/json' \
-  -H 'x-admin-token: <YOUR_ADMIN_TOKEN>' \
-  -d '{
-        "target": "my-device-123",
-        "type": "reboot",
-        "payload": {}
-      }' | jq .
+# Monitor in production
+npm run monitor
+
+# View PM2 logs
+npm run pm2:logs
 ```
 
-#### Minimal client examples
-
-```bash
-# Bash (Linux) minimal heartbeat loop
-SERVER_BASE="http://<SERVER_IP>:4000"
-ID="$(hostname)-$(cat /etc/machine-id 2>/dev/null || echo unknown)"
-while true; do
-  payload=$(cat <<EOF
-{"id":"$ID","hostname":"$(hostname)","version":"kiosk-client-1.1.0","status":"ok"}
-EOF
-)
-  resp=$(curl -fsS -X POST "$SERVER_BASE/api/heartbeat" -H 'Content-Type: application/json' -d "$payload" || true)
-  # Optionally parse and act on commands using jq
-  # echo "$resp" | jq -r '.commands[] | .type'
-  sleep 15
-done
-```
-
-```powershell
-# PowerShell (Windows) minimal heartbeat loop
-$SERVER_BASE = "http://<SERVER_IP>:4000"
-$id = "$env:COMPUTERNAME"
-while ($true) {
-  $payload = @{ id=$id; hostname=$env:COMPUTERNAME; version="ps-client-1.0"; status="ok" } | ConvertTo-Json
-  try { Invoke-RestMethod -Uri "$SERVER_BASE/api/heartbeat" -Method Post -Body $payload -ContentType "application/json" } catch {}
-  Start-Sleep -Seconds 15
-}
-```
-
-## Client Management and Deployment
-
-The admin UI includes panels for deploying scripts and restarting clients via SSH.
-
-- **Deploy to Clients**: Enter SSH credentials and the server's base URL to push the `start-kiosk.sh` script to multiple clients, set it up as a service, and optionally reboot them.
-- **Restart Clients**: Remotely reboot a group of clients using SSH credentials.
-
-## Usage
-
-- **Admin Interface**: Access the admin panel at `http://localhost:4000` (or the IP address of your server machine) to change the kiosk URL and manage settings.
-  - Enter a new URL in the "Control Panel" and click "Switch URL" or press Enter.
-  - In the "Connected Devices" panel, see client IPs, user agents, and current URLs; click "Set URL" to assign a specific URL to a client IP.
-- **Kiosk Client (Linux)**: The `kiosk-client/start-kiosk.sh` script is designed for Linux (Debian/Ubuntu/Mint). It now includes a heartbeat function to report status and receive commands.
-  - **Setup**: Run with `sudo ./start-kiosk.sh` once to create a 'student' user, enable autologin, and install necessary packages (`jq`, browsers).
-  - **Run**: After setup, the system will automatically log in and start the kiosk. To run manually, execute `./start-kiosk.sh` as a regular user.
-
-- **Kiosk Client (Windows/Other OS)**: You can use a simple PowerShell or bash script to interact with the heartbeat system.
-
-  **PowerShell Example:**
-  ```powershell
-  $SERVER_BASE = "http://<YOUR_SERVER_IP>:4000"
-  while ($true) {
-    $payload = @{
-      id = "$env:COMPUTERNAME"
-      hostname = "$env:COMPUTERNAME"
-      version = "ps-client-1.0"
-      status = "ok"
-    } | ConvertTo-Json
-    try {
-      Invoke-RestMethod -Uri "$SERVER_BASE/api/heartbeat" -Method Post -Body $payload -ContentType "application/json"
-    } catch {}
-    Start-Sleep -Seconds 60
-  }
-  ```
-  - Copy the `kiosk-client/start-kiosk.sh` script to your client machine.
-  - If run with `sudo`, it sets up a 'student' user with no password and autologin, configuring the system to boot into kiosk mode.
-  - If run as a regular user, it starts the kiosk browser in full-screen mode with the specified URL.
-  - Make it executable: `chmod +x start-kiosk.sh`
-  - Run setup with `sudo ./start-kiosk.sh` (once), then reboot to autologin as 'student', or run as regular user `./start-kiosk.sh` to start kiosk mode manually.
-  - The client will display the current URL set on the server, update to a new URL periodically or when the browser restarts, and notify the server of its connection status.
-
-## Exiting Kiosk Mode
-
-- **Manual Exit**: If running the kiosk script manually, press `Ctrl+C` in the terminal to stop the script. To close the browser, press `Ctrl+Alt+Shift+Q` (if configured) or force-quit with `Alt+F4` if enabled.
-- **Terminal Access**: If possible, open a terminal with `Ctrl+Alt+T` and run `pkill -f google-chrome` or `pkill -f firefox` to kill the browser, and `pkill -f start-kiosk.sh` to stop the script.
-- **Disable Autologin**: If autologin is set up and you can't exit, boot into recovery mode (via GRUB menu > Advanced options > Recovery mode > root shell) and remove the autologin config: `rm /etc/lightdm/lightdm.conf.d/60-kiosk-autologin.conf`, then reboot.
-- **Emergency**: If all else fails, boot from a live USB to access and modify the system configuration.
-
-## Configuration
-
-- **Environment Variables**: Customize settings in `kiosk-server/.env`:
-  - `PORT`: Server port (default: 4000)
-  - `KIOSK_URL`: Default URL to display
-  - `KIOSK_TITLE`: Title shown on the kiosk
-  - `KIOSK_FOOTER_TEXT`: Footer text
-  - `TIMEZONE`: Timezone for clock display
-  - `DISABLE_CONTEXT_MENU` and `DISABLE_SHORTCUTS`: Security flags for kiosk mode
-- **Persisted Config**: URL changes made from the admin panel are saved to `kiosk-server/config/kiosk-config.json`.
-
-## Network Scanning Features
-
-The server includes comprehensive network device discovery capabilities using multiple scanning methods:
-
-### Scanning Methods
-
-1. **Bonjour/mDNS Discovery**: Fast discovery of devices advertising services (printers, media devices, etc.) with friendly names
-2. **ARP Table Scanning**: Quick MAC address and IP discovery using system ARP cache or node-arp library
-3. **Nmap Scanning**: Advanced scanning with OS detection, service identification, and port scanning
-4. **MAC Vendor Lookup**: Comprehensive OUI database for identifying device manufacturers
-
-### Scan Modes
-
-Access the scan API at `/api/lan/scan?mode=<mode>`:
-
-- **Fast Mode** (default): Quick scan using Bonjour, ARP, and basic nmap ping scan (3-5 seconds)
-  ```
-  GET /api/lan/scan?mode=fast
-  ```
-
-- **Detailed Mode**: Adds OS detection and common port scanning (10-30 seconds)
-  ```
-  GET /api/lan/scan?mode=detailed
-  ```
-
-- **Aggressive Mode**: Full OS detection, service version detection, and port scanning 1-1000 (30-120 seconds)
-  ```
-  GET /api/lan/scan?mode=aggressive
-  ```
-
-### Device Information Gathered
-
-Depending on scan mode and device type, the scan returns:
-
-- **IP Address**: IPv4 address of the device
-- **MAC Address**: Physical hardware address
-- **Hostname**: Device network name
-- **Vendor**: Manufacturer identified from MAC address OUI
-- **Device Type**: Automatically identified (Windows PC, Linux Server, Printer, Router, etc.)
-- **Operating System**: OS name and detection accuracy (detailed/aggressive modes)
-- **Open Ports**: List of accessible ports with service names and versions
-- **Services**: Bonjour/mDNS advertised services (AirPlay, SMB, HTTP, etc.)
-- **Scan Sources**: Which methods successfully detected the device
-
-### Single Device Scan
-
-For detailed information about a specific IP:
+## 📁 Project Structure
 
 ```
-GET /api/lan/scan/192.168.1.100
+kiosk-server/
+├── server.js           # Main server application
+├── public/            # Web UI files
+│   ├── index.html     # Admin dashboard
+│   ├── js/main.js     # Client-side logic
+│   └── css/styles.css # Styling
+├── scripts/           # Deployment & setup scripts
+│   ├── setup-pm2.sh   # PM2 production setup
+│   ├── monitor.js     # Health monitoring
+│   └── nginx-kiosk.conf # Nginx config
+├── config/            # Persistent storage
+├── logs/              # Application logs
+└── .env               # Configuration
 ```
 
-This performs a comprehensive scan of the single device including OS detection, port scanning, and service identification.
+## 🌟 Tips & Best Practices
 
-### Custom Subnet and Ports
+1. **Network Setup**
+   - Use static IPs for kiosk machines
+   - Consider a dedicated VLAN for kiosks
+   - Use Ethernet over WiFi when possible
 
-Specify custom subnet or port ranges:
+2. **Display Settings**
+   - Disable screen savers on kiosk machines
+   - Set display to never sleep
+   - Configure auto-login for kiosk user
 
-```
-GET /api/lan/scan?mode=detailed&subnet=192.168.1.0/24&ports=22,80,443,3389
-```
+3. **Maintenance**
+   - Regular updates: `cd kiosk-server && git pull && npm install`
+   - Monitor logs: `pm2 logs` or check `logs/` directory
+   - Backup config: `cp -r config/ config-backup/`
 
-## Troubleshooting
+4. **Scaling**
+   - One server can handle 100+ kiosks
+   - Use PM2 cluster mode for load balancing
+   - Consider Redis for larger deployments
 
-- **Can't Type in Admin Input Field**: Hard refresh the page (`Ctrl+Shift+R`) to load the latest scripts. If the issue persists, check the browser console for errors (right-click > Inspect > Console).
-- **Kiosk Client Not Updating URL**: Ensure the client script is the latest version with polling logic. Verify the client can reach the server at `http://<server-ip>:4000/api/config`. Stop and restart the script (`Ctrl+C`, then `./start-kiosk.sh`). If needed, kill the browser (`pkill -f google-chrome`) to force a relaunch with the new URL.
-- **LAN Scan Returns Few/No Devices**: Try using detailed or aggressive scan mode. Ensure nmap is installed on the server (`npm install` should handle node-nmap). For best results, run the server with appropriate network permissions.
-- **Nmap Requires Root/Admin**: Some nmap features (OS detection) require elevated privileges. Run the server with `sudo` on Linux or as Administrator on Windows for full functionality.
-- **Can't Exit Kiosk Mode**: Follow the steps in 'Exiting Kiosk Mode' above. If stuck, force a reboot by holding the power button, then boot into recovery mode to disable autologin.
+## 📡 API Reference
 
-## License
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/config` | GET | Get current configuration |
+| `/api/config` | POST | Update configuration |
+| `/api/devices` | GET | List connected devices |
+| `/api/stream` | GET | SSE stream for real-time updates |
+| `/api/action` | POST | Send control actions |
+| `/api/lan/scan` | GET | Scan network for devices |
+| `/api/heartbeat` | POST | Client heartbeat check-in |
+| `/api/deploy` | POST | Deploy to multiple clients |
 
-This project is licensed under the MIT License - see the LICENSE file for details (if applicable).
+## 👥 Support
+
+- **Documentation**: [Wiki](https://github.com/yourusername/kiosk-server/wiki)
+- **Issues**: [GitHub Issues](https://github.com/yourusername/kiosk-server/issues)  
+- **Community**: [Discord](https://discord.gg/yourinvite)
+
+## 🤝 Contributing
+
+Contributions are welcome! Please:
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+## 📄 License
+
+MIT License - see [LICENSE](LICENSE) file for details
+
+---
+
+**Made with ❤️ for the open source community**

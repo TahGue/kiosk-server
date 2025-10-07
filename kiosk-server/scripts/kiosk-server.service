@@ -1,0 +1,38 @@
+[Unit]
+Description=Kiosk Server
+Documentation=https://github.com/yourusername/kiosk-server
+After=network.target
+
+[Service]
+Type=simple
+User=kiosk
+Group=kiosk
+WorkingDirectory=/opt/kiosk-server
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=10
+
+# Environment variables
+Environment="NODE_ENV=production"
+Environment="PORT=4000"
+EnvironmentFile=-/opt/kiosk-server/.env
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/kiosk-server/config /opt/kiosk-server/logs
+
+# Resource limits
+MemoryLimit=512M
+CPUQuota=80%
+TasksMax=100
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kiosk-server
+
+[Install]
+WantedBy=multi-user.target

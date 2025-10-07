@@ -357,50 +357,103 @@ function initKiosk() {
                 getJson('/api/heartbeat/clients').catch(() => [])
             ]);
 
-            const isValidArray = (arr) => Array.isArray(arr);
-            const sse = isValidArray(sseDevices) ? sseDevices : [];
-            const hb = isValidArray(hbClients) ? hbClients : [];
+            const sse = Array.isArray(sseDevices) ? sseDevices : [];
+            const hb = Array.isArray(hbClients) ? hbClients : [];
 
             if (sse.length === 0 && hb.length === 0) {
                 devicesListEl.innerHTML = '<p>No devices are currently connected.</p>';
                 return;
             }
 
-            const sseHtml = sse.map(device => `
-                <div class="device-item">
-                    <div class="device-id">[SSE] ID: ${device.id.substring(0, 8)}...</div>
-                    <div class="device-ip">IP: ${device.ip}</div>
-                    <div class="device-agent">Agent: ${device.userAgent.substring(0, 60)}...</div>
-                    <div class="device-agent"><span class="chip ok"><span class="dot"></span> Client Active</span></div>
-                    <div class="device-url">URL: ${device.currentUrl || 'Unknown'}</div>
-                    <div class="device-action">
-                        <button onclick="copyIp('${device.ip}')">Copy IP</button>
-                        <button onclick="openUrlNewTab('${device.currentUrl || ''}')">Open URL</button>
-                        <button onclick="resolveIpHostname('${device.ip}')">Resolve</button>
-                        <button onclick="setUrlForIp('${device.ip}')">Set URL</button>
-                        <button onclick="sshToHost('${device.ip}')">SSH</button>
-                    </div>
-                </div>
-            `).join('');
+            // Merge by IP when available. Fallback to HB entries without IP as separate items.
+            const byIp = new Map();
+            sse.forEach(d => {
+                const ip = d.ip || '';
+                if (!ip) return; // ignore if no IP
+                byIp.set(ip, {
+                    ip,
+                    sse: d,
+                    hb: null
+                });
+            });
+            hb.forEach(c => {
+                const ip = c.ip || '';
+                if (ip) {
+                    const e = byIp.get(ip) || { ip, sse: null, hb: null };
+                    e.hb = c;
+                    byIp.set(ip, e);
+                }
+            });
 
-            const hbHtml = hb.map(c => `
-                <div class="device-item">
-                    <div class="device-id">[HB] ${c.key} ${c.online ? '<span class="chip ok"><span class="dot"></span> Online</span>' : '<span class="chip err"><span class="dot"></span> Offline</span>'}</div>
-                    <div class="device-ip">IP: ${c.ip || '-'}</div>
-                    <div class="device-agent">Host: ${c.hostname || '-'} | Ver: ${c.version || '-'}</div>
-                    <div class="device-url">URL: ${c.currentUrl || 'Unknown'}</div>
-                    <div class="device-action">
-                        ${c.ip ? `<button onclick="copyIp('${c.ip}')">Copy IP</button>` : ''}
-                        ${c.currentUrl ? `<button onclick="openUrlNewTab('${c.currentUrl}')">Open URL</button>` : ''}
-                        ${c.ip ? `<button onclick=\"resolveIpHostname('${c.ip}')\">Resolve</button>` : ''}
-                        ${c.ip ? `<button onclick=\"setUrlForIp('${c.ip}')\">Set URL</button>` : ''}
-                        <button onclick="hbReboot('${c.key}')">Reboot</button>
-                        <button onclick="hbShutdown('${c.key}')">Shutdown</button>
-                    </div>
-                </div>
-            `).join('');
+            // Build unified list: entries with IP first (merged), then HB-only without IP
+            const rows = [];
+            const ipEntries = Array.from(byIp.values());
+            ipEntries.forEach(entry => {
+                const { ip, sse: s, hb: h } = entry;
+                const sseActive = !!s;
+                const hbOnline = !!(h && h.online);
+                const agent = (s && s.userAgent) ? s.userAgent.substring(0, 60) : (h && h.hostname ? `Host: ${h.hostname}` : '-');
+                const url = (s && s.currentUrl) || (h && h.currentUrl) || 'Unknown';
+                const hbKey = h && h.key ? h.key : '';
+                rows.push({
+                    key: ip,
+                    label: ip,
+                    agent,
+                    url,
+                    sseActive,
+                    hbOnline,
+                    hbKey
+                });
+            });
 
-            devicesListEl.innerHTML = applyDevicesFilter(sseHtml + hbHtml);
+            // Add HB-only entries lacking IP
+            hb.forEach(h => {
+                if (!h.ip) {
+                    rows.push({
+                        key: `hb:${h.key}`,
+                        label: h.key,
+                        agent: `Host: ${h.hostname || '-'} | Ver: ${h.version || '-'}`,
+                        url: h.currentUrl || 'Unknown',
+                        sseActive: false,
+                        hbOnline: !!h.online,
+                        hbKey: h.key
+                    });
+                }
+            });
+
+            // Sort: active SSE first, then online HB, then label asc
+            rows.sort((a, b) => {
+                if (a.sseActive !== b.sseActive) return a.sseActive ? -1 : 1;
+                if (a.hbOnline !== b.hbOnline) return a.hbOnline ? -1 : 1;
+                return String(a.label).localeCompare(String(b.label));
+            });
+
+            // Render rows
+            const html = rows.map(r => {
+                const chips = [
+                    r.sseActive ? '<span class="chip ok"><span class="dot"></span> Client Active</span>' : '<span class="chip err"><span class="dot"></span> No Client</span>',
+                    r.hbOnline ? '<span class="chip ok"><span class="dot"></span> HB Online</span>' : '<span class="chip warn"><span class="dot"></span> HB Unknown</span>'
+                ].join(' ');
+                const actions = [
+                    r.label ? `<button onclick="copyIp('${r.label}')">Copy IP</button>` : '',
+                    r.url && r.url !== 'Unknown' ? `<button onclick="openUrlNewTab('${r.url}')">Open URL</button>` : '',
+                    r.label ? `<button onclick="resolveIpHostname('${r.label}')">Resolve</button>` : '',
+                    r.label ? `<button onclick="setUrlForIp('${r.label}')">Set URL</button>` : '',
+                    r.label ? `<button onclick="sshToHost('${r.label}')">SSH</button>` : '',
+                    r.hbKey ? `<button onclick="hbReboot('${r.hbKey}')">Reboot</button>` : '',
+                    r.hbKey ? `<button onclick="hbShutdown('${r.hbKey}')">Shutdown</button>` : ''
+                ].filter(Boolean).join(' ');
+                return `
+                    <div class="device-item">
+                        <div class="device-id"><strong>${r.label}</strong> ${chips}</div>
+                        <div class="device-agent">${r.agent}</div>
+                        <div class="device-url">URL: ${r.url}</div>
+                        <div class="device-action">${actions}</div>
+                    </div>
+                `;
+            }).join('');
+
+            devicesListEl.innerHTML = applyDevicesFilter(html);
         } catch (error) {
             if (error.message.includes('401')) {
                 devicesListEl.innerHTML = `<p class="error">Authorization failed. Is the Admin Token correct?</p>`;

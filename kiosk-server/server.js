@@ -3,6 +3,7 @@ const path = require('path');
 const http = require('http');
 const enforce = require('express-sslify');
 const cors = require('cors');
+const net = require('net');
 const { exec } = require('child_process');
 const os = require('os');
 const fs = require('fs');
@@ -23,8 +24,15 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 4000;
 
+// Security limits
+const MAX_HEARTBEAT_RATE = 120; // max 120 heartbeats per minute per IP
+const MAX_SSE_CLIENTS = 100; // max concurrent SSE connections
+const MAX_HB_CLIENTS = 200; // max tracked heartbeat clients
+const MAX_COMMAND_QUEUE_SIZE = 100; // max queued commands per client
+const rateLimits = new Map(); // IP -> { count, resetTime }
+
 // Middleware
-app.use(express.json());
+app.use(express.json({ limit: '1mb' })); // Reduce from default to 1mb for security
 
 // CORS (configurable)
 const corsOrigin = process.env.CORS_ORIGIN || '*';
@@ -175,14 +183,39 @@ app.get('/api/time', (req, res) => {
 
 // Get current kiosk configuration
 app.get('/api/config', (req, res) => {
-  res.json(kioskConfig);
+  // Check if there's a client-specific config for the requesting IP
+  const clientIp = normalizeIp(req.ip);
+  if (clientSpecificConfigs.has(clientIp)) {
+    const clientConfig = Object.assign({}, kioskConfig, clientSpecificConfigs.get(clientIp));
+    res.json(clientConfig);
+  } else {
+    res.json(kioskConfig);
+  }
 });
 
 // Update kiosk configuration and broadcast to clients
 app.post('/api/config', (req, res) => {
+  // Check admin token if set
+  const adminToken = process.env.ADMIN_TOKEN || '';
+  if (adminToken && req.headers['x-admin-token'] !== adminToken) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   try {
     const updates = req.body || {};
-    Object.assign(kioskConfig, updates);
+    
+    // Validate URL if provided
+    if (updates.kioskUrl && !isValidUrl(updates.kioskUrl)) {
+      return res.status(400).json({ error: 'Invalid URL format' });
+    }
+    
+    // Only allow specific fields
+    const allowed = ['kioskUrl', 'title', 'footerText', 'timezone', 'disableContextMenu', 'disableShortcuts'];
+    const filtered = {};
+    for (const key of allowed) {
+      if (key in updates) filtered[key] = updates[key];
+    }
+    
+    Object.assign(kioskConfig, filtered);
     saveConfigToDisk(kioskConfig);
     broadcast('config', kioskConfig);
     res.json({ ok: true, config: kioskConfig });
@@ -193,13 +226,38 @@ app.post('/api/config', (req, res) => {
 
 // Set per-IP configuration override (currently supports kioskUrl)
 app.post('/api/config/ip/:ip', (req, res) => {
+  // Check admin token if set
+  const adminToken = process.env.ADMIN_TOKEN || '';
+  if (adminToken && req.headers['x-admin-token'] !== adminToken) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   try {
     const ip = req.params.ip;
+    
+    // Validate IP format
+    if (!isValidIp(ip)) {
+      return res.status(400).json({ error: 'Invalid IP address format' });
+    }
+    
     const body = req.body || {};
+    
+    // Validate URL if provided
+    if (body.kioskUrl && !isValidUrl(body.kioskUrl)) {
+      return res.status(400).json({ error: 'Invalid URL format' });
+    }
     const existing = clientSpecificConfigs.get(ip) || {};
     const merged = Object.assign({}, existing, body);
     clientSpecificConfigs.set(ip, merged);
     saveClientConfigsToDisk();
+    // Broadcast to the specific client if connected
+    for (const [id, client] of sseClients.entries()) {
+      if (client.ip === ip) {
+        const customConfig = Object.assign({}, kioskConfig, merged);
+        try {
+          client.res.write(`event: config\ndata: ${JSON.stringify(customConfig)}\n\n`);
+        } catch (_) {}
+      }
+    }
     res.json({ ok: true, ip, config: merged });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err?.message || err) });
@@ -213,6 +271,11 @@ app.get('/api/ui-defaults', (req, res) => {
 
 // Server-Sent Events stream for admin/client UI
 app.get('/api/stream', (req, res) => {
+  // Check max SSE clients limit
+  if (sseClients.size >= MAX_SSE_CLIENTS) {
+    return res.status(503).json({ error: 'Too many connections, try again later' });
+  }
+  
   // Standard SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -251,20 +314,15 @@ app.get('/api/stream', (req, res) => {
   });
 });
 
-// List connected SSE clients (lightweight info for admin UI)
-app.get('/api/devices', (req, res) => {
-  const list = Array.from(sseClients.values()).map(c => ({
-    id: c.id,
-    ip: c.ip,
-    userAgent: c.userAgent,
-    connectedAt: c.connectedAt,
-    currentUrl: c.currentUrl || null
-  }));
-  res.json(list);
-});
+// (Removed duplicate /api/devices route; single implementation exists later with authorization)
 
 // Broadcast UI actions (e.g., reload, blackout)
 app.post('/api/action', (req, res) => {
+  // Check admin token if set
+  const adminToken = process.env.ADMIN_TOKEN || '';
+  if (adminToken && req.headers['x-admin-token'] !== adminToken) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   const { type, value } = req.body || {};
   if (!type) return res.status(400).json({ error: 'type is required' });
   try {
@@ -311,6 +369,23 @@ app.get('/client/start-kiosk.sh', (req, res) => {
 app.post('/api/heartbeat', (req, res) => {
   try {
     const clientIp = normalizeIp(req.ip);
+    
+    // Rate limiting check
+    if (!checkRateLimit(clientIp, MAX_HEARTBEAT_RATE)) {
+      return res.status(429).json({ error: 'Rate limit exceeded', retry_after: 60 });
+    }
+    
+    // Clean up old clients if we're at the limit
+    if (heartbeatClients.size >= MAX_HB_CLIENTS) {
+      const now = Date.now();
+      const cutoff = now - (10 * 60 * 1000); // 10 minutes
+      for (const [key, client] of heartbeatClients.entries()) {
+        if (new Date(client.lastSeen).getTime() < cutoff) {
+          heartbeatClients.delete(key);
+          heartbeatCommands.delete(key); // Clean associated commands too
+        }
+      }
+    }
     const {
       id,
       hostname,
@@ -381,7 +456,13 @@ app.post('/api/heartbeat/command', (req, res) => {
   }
   const { target, type, payload } = req.body || {};
   if (!target || !type) return res.status(400).json({ error: 'target and type are required' });
+  
+  // Check command queue size limit
   const q = heartbeatCommands.get(target) || [];
+  if (q.length >= MAX_COMMAND_QUEUE_SIZE) {
+    return res.status(507).json({ error: 'Command queue full for target' });
+  }
+  
   q.push({ type, payload: payload || {}, createdAt: new Date().toISOString() });
   heartbeatCommands.set(target, q);
   res.json({ ok: true, queued: q.length });
@@ -401,6 +482,44 @@ function normalizeIp(ip) {
     return ip.substring(7);
   }
   return ip;
+}
+
+// Input validation helpers
+function isValidIp(ip) {
+  return net.isIPv4(ip) || net.isIPv6(ip);
+}
+
+function isValidUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'file:';
+  } catch {
+    return false;
+  }
+}
+
+// Rate limiting helper
+function checkRateLimit(ip, maxPerMinute) {
+  const now = Date.now();
+  const limit = rateLimits.get(ip) || { count: 0, resetTime: now + 60000 };
+  
+  if (now > limit.resetTime) {
+    limit.count = 1;
+    limit.resetTime = now + 60000;
+  } else {
+    limit.count++;
+  }
+  
+  rateLimits.set(ip, limit);
+  
+  // Clean old entries periodically
+  if (rateLimits.size > 1000) {
+    for (const [key, val] of rateLimits.entries()) {
+      if (now > val.resetTime) rateLimits.delete(key);
+    }
+  }
+  
+  return limit.count <= maxPerMinute;
 }
 
 // Clean up verbose vendor names from OUI database
@@ -1355,66 +1474,11 @@ app.post('/api/deploy', async (req, res) => {
   res.json({ ok: true, count: results.length, results });
 });
 
-// Get current kiosk config
-app.get('/api/config', (req, res) => {
-  // Check if there's a client-specific config for the requesting IP
-  const clientIp = normalizeIp(req.ip);
-  if (clientSpecificConfigs.has(clientIp)) {
-    const clientConfig = Object.assign({}, kioskConfig, clientSpecificConfigs.get(clientIp));
-    res.json(clientConfig);
-  } else {
-    res.json(kioskConfig);
-  }
-});
+// (Removed duplicate /api/config GET - already defined earlier at line ~177)
 
-// Update kiosk config (requires admin token if set)
-app.post('/api/config', (req, res) => {
-  const adminToken = process.env.ADMIN_TOKEN || '';
-  if (adminToken && req.headers['x-admin-token'] !== adminToken) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  const allowed = ['kioskUrl', 'title', 'footerText', 'timezone', 'disableContextMenu', 'disableShortcuts'];
-  let changed = false;
-  for (const key of allowed) {
-    if (key in req.body) {
-      kioskConfig[key] = req.body[key];
-      changed = true;
-    }
-  }
-  if (changed) {
-    broadcast('config', kioskConfig);
-    // Persist changes so they survive restarts
-    saveConfigToDisk(kioskConfig);
-  }
-  res.json(kioskConfig);
-});
+// (Removed duplicate /api/config POST - already defined earlier at line ~182)
 
-// Update kiosk config for a specific IP (requires admin token if set)
-app.post('/api/config/ip/:ip', (req, res) => {
-  const adminToken = process.env.ADMIN_TOKEN || '';
-  if (adminToken && req.headers['x-admin-token'] !== adminToken) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  const clientIp = req.params.ip;
-  const allowed = ['kioskUrl'];
-  const clientConfig = {};
-  for (const key of allowed) {
-    if (key in req.body) {
-      clientConfig[key] = req.body[key];
-    }
-  }
-  clientSpecificConfigs.set(clientIp, clientConfig);
-  saveClientConfigsToDisk();
-  // Broadcast to the specific client if connected
-  for (const [id, client] of sseClients.entries()) {
-    if (client.ip === clientIp) {
-      const customConfig = Object.assign({}, kioskConfig, clientConfig);
-      client.res.write(`event: config\n`);
-      client.res.write(`data: ${JSON.stringify(customConfig)}\n\n`);
-    }
-  }
-  res.json({ ip: clientIp, config: clientConfig });
-});
+// (Removed duplicate /api/config/ip/:ip POST - already defined earlier at line ~195)
 
 // Get list of client-specific configurations
 app.get('/api/config/clients', (req, res) => {
@@ -1426,19 +1490,7 @@ app.get('/api/config/clients', (req, res) => {
   res.json(configs);
 });
 
-// Control actions for the kiosk client (e.g., reload, blackout)
-// POST /api/action { type: 'reload' } or { type: 'blackout', value: true|false }
-app.post('/api/action', (req, res) => {
-  const adminToken = process.env.ADMIN_TOKEN || '';
-  if (adminToken && req.headers['x-admin-token'] !== adminToken) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  const { type, value } = req.body || {};
-  if (!type) return res.status(400).json({ error: 'type is required' });
-  if (!['reload', 'blackout'].includes(type)) return res.status(400).json({ error: 'invalid type' });
-  broadcast('action', { type, value: !!value });
-  res.json({ ok: true });
-});
+// (Removed duplicate /api/action POST - already defined earlier at line ~257)
 
 // SSE stream for real-time updates
 // Get list of connected devices
@@ -1460,39 +1512,7 @@ app.get('/api/devices', (req, res) => {
   res.json(devices);
 });
 
-app.get('/api/stream', (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders && res.flushHeaders();
-
-  // Determine client-specific config if available
-  const clientIp = normalizeIp(req.ip);
-  let clientConfig = kioskConfig;
-  if (clientSpecificConfigs.has(clientIp)) {
-    clientConfig = Object.assign({}, kioskConfig, clientSpecificConfigs.get(clientIp));
-  }
-
-  // Send initial config
-  res.write(`event: config\n`);
-  res.write(`data: ${JSON.stringify(clientConfig)}\n\n`);
-
-  const clientId = require('crypto').randomUUID();
-  const clientInfo = {
-    res,
-    ip: clientIp,
-    userAgent: req.headers['user-agent'],
-    connectedAt: new Date(),
-    currentUrl: clientConfig.kioskUrl || 'Unknown'
-  };
-
-  sseClients.set(clientId, clientInfo);
-  console.log(`[SSE] Client connected: ${clientIp} (ID: ${clientId.substring(0, 8)}...)`);
-
-  req.on('close', () => {
-    sseClients.delete(clientId);
-  });
-});
+// (Removed duplicate /api/stream GET - already defined earlier at line ~215)
 
 // Client registration endpoint to update current URL
 app.post('/api/register', (req, res) => {
@@ -1507,14 +1527,11 @@ app.post('/api/register', (req, res) => {
   res.json({ ok: true, ip: clientIp });
 });
 
-// Dedicated client view for kiosk screens
-app.get('/client', (req, res) => {
-  res.sendFile(path.join(__dirname, staticDir, 'client.html'));
-});
+// (Removed duplicate /client route - already defined earlier to serve index.html as SPA)
 
 // Serve the admin management UI at root and /admin
 app.get(['/', '/admin'], (req, res) => {
-  res.sendFile(path.join(__dirname, staticDir, 'index.html'));
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // Minimal 404 for unknown GET routes to avoid confusion
@@ -1536,6 +1553,40 @@ const server = http.createServer(app);
 server.listen(port, () => {
   console.log(`Kiosk server running on port ${port}`);
   console.log(`Visit http://localhost:${port} in your browser`);
+  
+  // Periodic cleanup of stale connections and rate limits (every 5 minutes)
+  setInterval(() => {
+    const now = Date.now();
+    
+    // Clean stale SSE connections
+    for (const [id, client] of sseClients.entries()) {
+      try {
+        // Test if connection is still alive
+        client.res.write(`: ping\n\n`);
+      } catch {
+        // Connection is dead, remove it
+        sseClients.delete(id);
+      }
+    }
+    
+    // Clean old heartbeat clients
+    const hbCutoff = now - (30 * 60 * 1000); // 30 minutes
+    for (const [key, client] of heartbeatClients.entries()) {
+      if (new Date(client.lastSeen).getTime() < hbCutoff) {
+        heartbeatClients.delete(key);
+        heartbeatCommands.delete(key);
+      }
+    }
+    
+    // Clean expired rate limits
+    for (const [ip, limit] of rateLimits.entries()) {
+      if (now > limit.resetTime + 60000) { // 1 minute after reset
+        rateLimits.delete(ip);
+      }
+    }
+    
+    console.log(`[CLEANUP] SSE: ${sseClients.size}, HB: ${heartbeatClients.size}, RateLimits: ${rateLimits.size}`);
+  }, 5 * 60 * 1000); // Every 5 minutes
 });
 
 // Handle unhandled promise rejections
