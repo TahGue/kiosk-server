@@ -23,7 +23,7 @@ DOMAIN="mustaqbal.local"
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-CLIENT_SCRIPT="$PROJECT_ROOT/../kiosk-client/start-kiosk-antix.sh"
+CLIENT_SCRIPT="$PROJECT_ROOT/../kiosk-client/start-kiosk.sh"
 
 log() {
   echo -e "${GREEN}[$(date '+%H:%M:%S')]${NC} $*"

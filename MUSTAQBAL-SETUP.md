@@ -98,7 +98,7 @@ TIMEZONE=Asia/Baghdad
 
 ### Client Script Features
 
-The `start-kiosk-antix.sh` script automatically:
+The `start-kiosk.sh` script automatically:
 - ✅ Installs required packages (chromium/firefox/midori)
 - ✅ Configures user 'tahar' if needed
 - ✅ Sets up auto-login for AntiX (SysV init compatible)
@@ -231,12 +231,12 @@ curl -X POST http://localhost:4000/api/action \
 
 ### Add New Client
 ```bash
-# Get client script from server
+# Get client script from server (prefilled with SERVER_BASE)
 wget http://YOUR-SERVER-IP:4000/client/start-kiosk.sh
 
-# Or use optimized version
+# Or run from repo checkout
 cd kiosk-client
-sudo bash start-kiosk-antix.sh
+sudo bash start-kiosk.sh
 ```
 
 ## 🔒 Security Notes
@@ -298,7 +298,7 @@ sudo -u tahar /home/tahar/start-kiosk.sh &
 sshpass -p tahar ssh tahar@192.168.1.50 "hostname"
 
 # Verify client script exists
-ls -la ../kiosk-client/start-kiosk-antix.sh
+ls -la ../kiosk-client/start-kiosk.sh
 ```
 
 ### Server slow with 100 clients

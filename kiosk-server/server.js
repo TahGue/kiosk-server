@@ -203,9 +203,19 @@ app.post('/api/config', (req, res) => {
   try {
     const updates = req.body || {};
     
+    // Check if body is empty
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'Request body is empty. Provide at least one field to update.' });
+    }
+    
     // Validate URL if provided
-    if (updates.kioskUrl && !isValidUrl(updates.kioskUrl)) {
-      return res.status(400).json({ error: 'Invalid URL format' });
+    if (updates.kioskUrl) {
+      if (typeof updates.kioskUrl !== 'string' || updates.kioskUrl.trim() === '') {
+        return res.status(400).json({ error: 'kioskUrl must be a non-empty string' });
+      }
+      if (!isValidUrl(updates.kioskUrl)) {
+        return res.status(400).json({ error: 'Invalid URL format. Must start with http://, https://, or file://' });
+      }
     }
     
     // Only allow specific fields
@@ -215,11 +225,17 @@ app.post('/api/config', (req, res) => {
       if (key in updates) filtered[key] = updates[key];
     }
     
+    if (Object.keys(filtered).length === 0) {
+      return res.status(400).json({ error: 'No valid fields to update. Allowed: ' + allowed.join(', ') });
+    }
+    
     Object.assign(kioskConfig, filtered);
     saveConfigToDisk(kioskConfig);
     broadcast('config', kioskConfig);
+    console.log('[CONFIG] Updated:', filtered);
     res.json({ ok: true, config: kioskConfig });
   } catch (err) {
+    console.error('[CONFIG] Update error:', err);
     res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
 });
@@ -1363,13 +1379,17 @@ app.post('/api/restart', async (req, res) => {
       connOpts.readyTimeout = 12000;
       await ssh.connect(connOpts);
 
-      // Simple restart command
-      const restartCmd = password ? 
-        `echo ${JSON.stringify(password)} | sudo -S -p "" reboot` : 
-        'sudo reboot';
+      // Try reboot command - first try without sudo (if user has NOPASSWD), then with password if needed
+      let restartCmd = 'sudo reboot';
+      
+      // If password provided, use it with sudo -S (but NOPASSWD should work without it)
+      if (password) {
+        restartCmd = `echo ${JSON.stringify(password)} | sudo -S -p "" reboot 2>&1 || sudo reboot`;
+      }
       
       const { stdout, stderr, code } = await ssh.execCommand(restartCmd, { cwd: '/tmp' });
       // Restart is always successful if we can connect (reboot kills connection)
+      // Even if code is non-zero, if connection drops it means reboot started
       results.push({ host: hostLabel, ok: true, code, stdout, stderr });
       ssh.dispose();
     } catch (e) {

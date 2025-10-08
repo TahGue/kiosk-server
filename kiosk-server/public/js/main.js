@@ -296,14 +296,23 @@ function initKiosk() {
     // Admin UI events
     const btnApply = document.getElementById('btn-apply-url');
     btnApply?.addEventListener('click', async () => {
-        const url = (document.getElementById('admin-url')?.value || '').trim();
+        let url = (document.getElementById('admin-url')?.value || '').trim();
         if (!url) return;
+        
+        // Auto-add http:// if no protocol specified
+        if (!url.match(/^https?:\/\//i) && !url.match(/^file:\/\//i)) {
+            url = 'http://' + url;
+            document.getElementById('admin-url').value = url;
+        }
+        
         try {
             await postJson('/api/config', { kioskUrl: url });
             showToast({ title: 'URL Updated', message: 'Clients will update shortly.', level: 'info' });
         } catch (e) {
             console.error('Failed to update kiosk URL', e);
-            const msg = e.message.includes('401') ? 'Authorization failed. Check Admin Token.' : e.message;
+            const msg = e.message.includes('400') ? 'Invalid URL format. Use http:// or https://' : 
+                        e.message.includes('401') ? 'Authorization failed. Check Admin Token.' : 
+                        e.message;
             showToast({ title: 'Update Failed', message: msg, level: 'error' });
         }
     });
@@ -488,7 +497,7 @@ function initKiosk() {
         if (!devicesListEl) return;
         fetchAndRenderDevices();
         if (!devicesIntervalId) {
-            devicesIntervalId = setInterval(fetchAndRenderDevices, 10000);
+            devicesIntervalId = setInterval(fetchAndRenderDevices, 5000);
         }
     }
 
@@ -610,10 +619,11 @@ function initKiosk() {
         if (!lanResultsEl) return;
         lanResultsEl.innerHTML = '<p>Scanning network... this may take a few seconds.</p>';
         try {
-            // Fetch both network scan and connected devices
-            const [scanRes, connectedDevices] = await Promise.all([
+            // Fetch network scan, connected SSE devices, and heartbeat clients
+            const [scanRes, connectedDevices, hbClients] = await Promise.all([
                 getJson(buildScanUrl()),
-                getJson('/api/devices').catch(() => [])
+                getJson('/api/devices').catch(() => []),
+                getJson('/api/heartbeat/clients').catch(() => [])
             ]);
             
             const devices = Array.isArray(scanRes.devices) ? scanRes.devices : [];
@@ -623,11 +633,14 @@ function initKiosk() {
             }
 
             // Create a Set of IPs that have active client connections
-            const connectedIPs = new Set(
-                Array.isArray(connectedDevices) 
-                    ? connectedDevices.map(d => d.ip) 
-                    : []
-            );
+            // Consider both SSE-connected clients and heartbeat-online clients
+            const connectedIPs = new Set();
+            if (Array.isArray(connectedDevices)) {
+                connectedDevices.forEach(d => d?.ip && connectedIPs.add(d.ip));
+            }
+            if (Array.isArray(hbClients)) {
+                hbClients.forEach(c => { if (c?.ip && c.online) connectedIPs.add(c.ip); });
+            }
 
             // Add scan summary header
             const scanMode = scanRes.scanMode || 'fast';

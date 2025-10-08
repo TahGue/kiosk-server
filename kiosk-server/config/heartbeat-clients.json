@@ -1,11 +1,11 @@
 {
-  "tahar-HP-EliteBook-840-G1-8483625bb4234be58ad99711e7572647": {
-    "id": "tahar-HP-EliteBook-840-G1-8483625bb4234be58ad99711e7572647",
-    "ip": "192.168.0.122",
-    "hostname": "tahar-HP-EliteBook-840-G1",
+  "tahar-Latitude-E7450-245db50d6d7f472f809a9fa7f9d1ccba": {
+    "id": "tahar-Latitude-E7450-245db50d6d7f472f809a9fa7f9d1ccba",
+    "ip": "10.1.1.26",
+    "hostname": "tahar-Latitude-E7450",
     "version": "kiosk-client-1.1.0",
     "status": "ok",
-    "currentUrl": "www.mgstadorent.se",
-    "lastSeen": "2025-09-30T06:17:49.390Z"
+    "currentUrl": "http://www.mustaqbal.hb.local",
+    "lastSeen": "2025-10-08T13:32:36.626Z"
   }
 }

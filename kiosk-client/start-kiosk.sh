@@ -13,10 +13,12 @@
 # of the machine running your Node.js server. The port is currently 4000.
 # For example: SERVER_BASE="http://192.168.1.101:4000"
 
-SERVER_BASE="http://192.168.0.178:4000"
-
+SERVER_BASE="http://10.1.1.63:4000"
 # Centralized client config (used by session script)
 CONFIG_PATH="/etc/kiosk-client.conf"
+
+# Default kiosk URL if server provides none and no last URL is stored
+DEFAULT_KIOSK_URL="http://www.mustaqbal.hb.local"
 
 
 # Optional: dual server support (priority order). Used when SERVER_BASE is unreachable.
@@ -160,6 +162,86 @@ if [[ "$(id -u)" -eq 0 ]]; then
      echo "[+] jq is already installed."
    fi
 
+   # --- 1.6 Install kiosk utilities for Mint (unclutter, xdotool) ---
+   echo "[+] Ensuring 'unclutter' (hide mouse) and 'xdotool' (window control) are installed..."
+   DEBIAN_FRONTEND=noninteractive apt-get install -y unclutter xdotool >/dev/null 2>&1 || true
+
+   # --- 1.7 Configure DNS suffix and gateway for Mustaqbal.HB network ---
+   echo "[+] Configuring DNS suffix (Mustaqbal.HB) and gateway (10.1.1.70)..."
+   
+   # Method 1: Add to /etc/hosts for guaranteed resolution (most reliable)
+   # Map www.mustaqbal.hb.local to the Laravel server IP 10.1.1.1
+   MUSTAQBAL_IP="10.1.1.1"
+   
+   # Remove any old entries first to avoid duplicates
+   sed -i '/mustaqbal.hb.local/d' /etc/hosts 2>/dev/null || true
+   
+   # Add fresh entry
+   echo "$MUSTAQBAL_IP www.mustaqbal.hb.local mustaqbal.hb.local" >> /etc/hosts
+   echo "[+] Added www.mustaqbal.hb.local -> $MUSTAQBAL_IP to /etc/hosts"
+   
+   # Method 2: Set DNS search domain in /etc/resolv.conf (for dynamic resolution)
+   if ! grep -q "search Mustaqbal.HB" /etc/resolv.conf 2>/dev/null; then
+     sed -i '1i search Mustaqbal.HB' /etc/resolv.conf 2>/dev/null || true
+   fi
+   
+   # Method 3: Persist DNS suffix via dhclient if present
+   if command -v dhclient >/dev/null 2>&1; then
+     echo 'supersede domain-name "Mustaqbal.HB";' > /etc/dhcp/dhclient.conf 2>/dev/null || true
+   fi
+   
+   # Method 4: Persist DNS suffix via NetworkManager if present
+   if command -v nmcli >/dev/null 2>&1; then
+     ACTIVE_CONN=$(nmcli -t -f NAME,DEVICE connection show --active | head -n1 | cut -d: -f1)
+     if [[ -n "$ACTIVE_CONN" ]]; then
+       nmcli connection modify "$ACTIVE_CONN" ipv4.dns-search "Mustaqbal.HB" >/dev/null 2>&1 || true
+       nmcli connection up "$ACTIVE_CONN" >/dev/null 2>&1 || true
+     fi
+   fi
+   
+   echo "[+] DNS configuration complete. Testing resolution..."
+   if command -v ping >/dev/null 2>&1; then
+     if ping -c1 -W2 www.mustaqbal.hb.local >/dev/null 2>&1; then
+       echo "[+] ✓ Successfully resolved www.mustaqbal.hb.local"
+     else
+       echo "[!] WARNING: Cannot ping www.mustaqbal.hb.local - check network/DNS"
+     fi
+   fi
+
+   # --- 1.8 Enable SSH server and set credentials (tahar/tahar) ---
+   echo "[+] Enabling SSH and configuring credentials (user: tahar / pass: tahar)..."
+   # Install OpenSSH server if missing
+   if ! dpkg -s openssh-server >/dev/null 2>&1; then
+     DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server >/dev/null 2>&1 || true
+   fi
+   # Ensure user 'tahar' exists and set password
+   if ! id -u tahar >/dev/null 2>&1; then
+     useradd -m -s /bin/bash tahar || true
+   fi
+   echo 'tahar:tahar' | chpasswd || true
+   # Allow tahar user to reboot and shutdown without password (for remote management)
+   # Use sudoers.d for safer configuration
+   SUDOERS_FILE="/etc/sudoers.d/tahar-kiosk"
+   if [[ ! -f "$SUDOERS_FILE" ]]; then
+     echo "# Allow tahar user to reboot/shutdown for kiosk management" > "$SUDOERS_FILE"
+     echo "tahar ALL=(ALL) NOPASSWD: /sbin/reboot, /sbin/shutdown, /usr/sbin/reboot, /usr/sbin/shutdown, /bin/systemctl reboot, /bin/systemctl poweroff" >> "$SUDOERS_FILE"
+     chmod 0440 "$SUDOERS_FILE"
+     echo "[+] Added sudo permissions for tahar user"
+   fi
+   # Allow password auth for SSH
+   if [[ -f /etc/ssh/sshd_config ]]; then
+     sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
+     sed -i 's/^#\?KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config || true
+     sed -i 's/^#\?UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config || true
+   fi
+   systemctl enable --now ssh >/dev/null 2>&1 || systemctl enable --now sshd >/dev/null 2>&1 || true
+   # Persist in client config for reference
+   {
+     echo "SSH_ENABLE=\"true\"";
+     echo "SSH_USERNAME=\"tahar\"";
+     echo "SSH_PASSWORD=\"tahar\"";
+   } >> "$CONFIG_PATH" 2>/dev/null || true
+
    # --- 2. Create Kiosk User ---
    if ! id -u student >/dev/null 2>&1; then
      echo "[+] Creating 'student' user..."
@@ -218,6 +300,18 @@ fi
 # Load client config (e.g., SERVER_BASE)
 if [[ -f /etc/kiosk-client.conf ]]; then
   . /etc/kiosk-client.conf
+fi
+
+# Disable screensaver and power management (X11)
+if command -v xset >/dev/null 2>&1; then
+  xset s off || true
+  xset -dpms || true
+  xset s noblank || true
+fi
+
+# Hide the mouse cursor after a short idle
+if command -v unclutter >/dev/null 2>&1; then
+  unclutter -idle 2 -root &
 fi
 
 # Prefer launching the installed user-mode kiosk client which handles browser detection and failover
@@ -393,6 +487,23 @@ BASHPROF
      fi
    fi
 
+   # --- 5. Desktop power settings for Mint (Cinnamon/XFCE) ---
+   echo "[+] Applying desktop power/screensaver settings when available..."
+   # Cinnamon (Linux Mint)
+   if su - student -c 'command -v gsettings >/dev/null 2>&1'; then
+     su - student -c "gsettings set org.cinnamon.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'" >/dev/null 2>&1 || true
+     su - student -c "gsettings set org.cinnamon.settings-daemon.plugins.power sleep-inactive-ac-timeout 0" >/dev/null 2>&1 || true
+     su - student -c "gsettings set org.cinnamon.desktop.session idle-delay 0" >/dev/null 2>&1 || true
+     su - student -c "gsettings set org.cinnamon.settings-daemon.plugins.power idle-dim false" >/dev/null 2>&1 || true
+   fi
+   # XFCE (Mint XFCE flavor)
+   if su - student -c 'command -v xfconf-query >/dev/null 2>&1'; then
+     su - student -c "xfconf-query -c xfce4-session -p /general/LockCommand -s ''" >/dev/null 2>&1 || true
+     su - student -c "xfconf-query -c xfce4-screensaver -p /saver/enabled -s false" >/dev/null 2>&1 || true
+     su - student -c "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -s 0" >/dev/null 2>&1 || true
+     su - student -c "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/dpms-enabled -s false" >/dev/null 2>&1 || true
+   fi
+
    # --- 6. Final Touches ---
    echo "[+] Setting permissions..."
    chown student:student /usr/local/bin/kiosk-session.sh
@@ -455,6 +566,44 @@ BASHPROF
 </head><body><div class="card"><h1>Servers unavailable</h1><p>Please check cables and power.</p><p>If the issue persists, contact your administrator.</p></div></body></html>
 EOF_OFFLINE
    fi
+
+   # --- 7. Create cleanup script that runs on boot ---
+   echo "[+] Creating boot cleanup script..."
+   cat > /usr/local/bin/kiosk-cleanup-on-boot.sh << 'EOCLEANUP'
+#!/bin/bash
+# Clean browser data on boot for all users
+for user_home in /home/*; do
+  if [[ -d "$user_home" ]]; then
+    # Chrome/Chromium
+    rm -rf "$user_home"/.config/google-chrome/Default/Session* 2>/dev/null || true
+    rm -rf "$user_home"/.config/google-chrome/Default/Cookies* 2>/dev/null || true
+    rm -rf "$user_home"/.config/chromium/Default/Session* 2>/dev/null || true
+    rm -rf "$user_home"/.cache/google-chrome/* 2>/dev/null || true
+    rm -rf "$user_home"/.cache/chromium/* 2>/dev/null || true
+    # Firefox
+    find "$user_home"/.mozilla/firefox -name "sessionstore*" -delete 2>/dev/null || true
+    rm -rf "$user_home"/.cache/mozilla/* 2>/dev/null || true
+  fi
+done
+EOCLEANUP
+   chmod +x /usr/local/bin/kiosk-cleanup-on-boot.sh
+   
+   # Create systemd service to run cleanup on boot
+   cat > /etc/systemd/system/kiosk-cleanup.service << 'EOSVC'
+[Unit]
+Description=Kiosk Browser Cleanup on Boot
+Before=display-manager.service lightdm.service gdm.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/kiosk-cleanup-on-boot.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOSVC
+   systemctl enable kiosk-cleanup.service 2>/dev/null || true
+   echo "[+] Boot cleanup service installed"
 
    echo "[+] Setup complete!"
    echo "[+] Please reboot the machine now. It will automatically boot into the kiosk."
@@ -658,24 +807,65 @@ if [[ -z "$KIOSK_URL" ]]; then
   if [[ -n "$KIOSK_URL" ]]; then
     log "Loaded last used URL: $KIOSK_URL"
   else
-    log "No last URL found. Falling back to offline page."
-    KIOSK_URL="file://$OFFLINE_PAGE"
+    log "No last URL found. Falling back to default URL: $DEFAULT_KIOSK_URL"
+    KIOSK_URL="$DEFAULT_KIOSK_URL"
   fi
 else
   # Save the fetched URL as the last used one
   save_last_url "$KIOSK_URL"
 fi
 
-# Clean up previous session state to prevent popups
-if [[ "$BROWSER_EXECUTABLE" == "google-chrome" ]]; then
-  echo "Cleaning up previous Chrome session state..."
-  rm -rf ~/.config/google-chrome/Default/Preferences
+# Clean up previous session state - force fresh session on every startup
+log "Cleaning up browser cache and session data for fresh start..."
+
+# Chrome/Chromium cleanup
+if [[ "$BROWSER_EXECUTABLE" == "google-chrome" ]] || [[ "$BROWSER_EXECUTABLE" =~ chromium ]]; then
+  log "Clearing Chrome/Chromium data..."
+  rm -rf ~/.config/google-chrome/Default/Session* 2>/dev/null || true
+  rm -rf ~/.config/google-chrome/Default/Cookies* 2>/dev/null || true
+  rm -rf ~/.config/google-chrome/Default/Cache* 2>/dev/null || true
+  rm -rf ~/.config/google-chrome/Default/'Local Storage'/* 2>/dev/null || true
+  rm -rf ~/.config/google-chrome/Default/'Service Worker'/* 2>/dev/null || true
+  rm -rf ~/.config/chromium/Default/Session* 2>/dev/null || true
+  rm -rf ~/.config/chromium/Default/Cookies* 2>/dev/null || true
+  rm -rf ~/.config/chromium/Default/Cache* 2>/dev/null || true
+  rm -rf ~/.cache/google-chrome/* 2>/dev/null || true
+  rm -rf ~/.cache/chromium/* 2>/dev/null || true
 fi
+
+# Firefox cleanup
+if [[ "$BROWSER_EXECUTABLE" =~ firefox ]]; then
+  log "Clearing Firefox data..."
+  # Find Firefox profile directory
+  FF_PROFILE=$(find ~/.mozilla/firefox -maxdepth 1 -name "*.default*" -type d 2>/dev/null | head -n1)
+  if [[ -n "$FF_PROFILE" ]]; then
+    rm -rf "$FF_PROFILE"/sessionstore* 2>/dev/null || true
+    rm -rf "$FF_PROFILE"/cookies.sqlite* 2>/dev/null || true
+    rm -rf "$FF_PROFILE"/cache2/* 2>/dev/null || true
+    rm -rf "$FF_PROFILE"/storage/* 2>/dev/null || true
+  fi
+  rm -rf ~/.cache/mozilla/* 2>/dev/null || true
+fi
+
+log "Browser cleanup complete - starting fresh session"
 
 log "Press Ctrl+C in this terminal to stop the kiosk script."
   log "To exit kiosk mode, press Ctrl+Alt+Shift+Q - this will close the browser."
 
+clean_browser_data() {
+  # Quick cleanup before launching browser
+  if [[ "$BROWSER_EXECUTABLE" == "google-chrome" ]] || [[ "$BROWSER_EXECUTABLE" =~ chromium ]]; then
+    rm -rf ~/.config/google-chrome/Default/Session* 2>/dev/null || true
+    rm -rf ~/.config/chromium/Default/Session* 2>/dev/null || true
+  elif [[ "$BROWSER_EXECUTABLE" =~ firefox ]]; then
+    FF_PROFILE=$(find ~/.mozilla/firefox -maxdepth 1 -name "*.default*" -type d 2>/dev/null | head -n1)
+    [[ -n "$FF_PROFILE" ]] && rm -rf "$FF_PROFILE"/sessionstore* 2>/dev/null || true
+  fi
+}
+
 launch_browser() {
+  # Clean session data before each launch
+  clean_browser_data
   log "Launching browser in kiosk mode for: $KIOSK_URL_RUNNING"
   "$BROWSER_EXECUTABLE" $BROWSER_ARGS "$KIOSK_URL_RUNNING" &
   BROWSER_PID=$!

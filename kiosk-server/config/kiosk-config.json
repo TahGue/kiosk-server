@@ -1,5 +1,5 @@
 {
-  "kioskUrl": "www.mgstadorent.se",
+  "kioskUrl": "http://10.1.1.63:3000",
   "title": "Kiosk Display",
   "footerText": "© 2025 Kiosk System",
   "timezone": "Europe/Berlin",

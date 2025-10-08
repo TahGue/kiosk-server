@@ -8,7 +8,7 @@
 set -e
 
 # --- CONFIGURATION (Edit these if needed) ---
-SERVER_IP="${SERVER_IP:-192.168.1.10}"
+SERVER_IP="${SERVER_IP:-10.1.1.63}"
 SERVER_PORT="${SERVER_PORT:-4000}"
 SERVER_BASE="http://${SERVER_IP}:${SERVER_PORT}"
 DOMAIN="mustaqbal.local"
