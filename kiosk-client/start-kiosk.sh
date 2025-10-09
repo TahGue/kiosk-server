@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # ==============================================================================
-# Kiosk Client Startup Script for Linux (Mint, antiX, Debian-based)
+# Kiosk Client Startup Script for Multiple Linux Distributions
 # ==============================================================================
-# This script sets up a kiosk environment and launches a web browser in full-screen
-# kiosk mode. It ensures it automatically restarts if it closes and can set up a
-# dedicated 'student' user with autologin.
-# Supports: Linux Mint (LightDM), antiX (SLiM/no DM), and other Debian-based distros.
+# Enhanced version with multi-distro support and comprehensive cache clearing
+# Supports: Alpine, Debian-based, RPM-based (Fedora/RHEL), Arch, SUSE, and others.
+# Display Managers: LightDM, GDM, SDDM, SLiM, and no-DM configurations.
+# Init Systems: systemd, OpenRC, SysVinit
 
 # --- Step 1: CONFIGURE YOUR SERVER ADDRESS ---
 # IMPORTANT: Replace "<YOUR_SERVER_IP>" with the actual local IP address
@@ -47,6 +47,103 @@ log() {
 # Function to check if a command is available
 command_exists() {
   command -v "$1" >/dev/null 2>&1
+}
+
+# Detect Linux distribution and package manager
+detect_distro() {
+  if [ -f /etc/alpine-release ]; then
+    DISTRO="alpine"
+    PKG_MGR="apk"
+    UPDATE_CMD="apk update"
+    INSTALL_CMD="apk add"
+    INSTALL_FRONTEND=""
+  elif command_exists apt-get; then
+    DISTRO="debian"
+    PKG_MGR="apt"
+    UPDATE_CMD="apt-get update"
+    INSTALL_CMD="apt-get install -y"
+    INSTALL_FRONTEND="DEBIAN_FRONTEND=noninteractive"
+  elif command_exists dnf; then
+    DISTRO="fedora"
+    PKG_MGR="dnf"
+    UPDATE_CMD="dnf check-update"
+    INSTALL_CMD="dnf install -y"
+    INSTALL_FRONTEND=""
+  elif command_exists yum; then
+    DISTRO="rhel"
+    PKG_MGR="yum"
+    UPDATE_CMD="yum check-update"
+    INSTALL_CMD="yum install -y"
+    INSTALL_FRONTEND=""
+  elif command_exists pacman; then
+    DISTRO="arch"
+    PKG_MGR="pacman"
+    UPDATE_CMD="pacman -Sy"
+    INSTALL_CMD="pacman -S --noconfirm"
+    INSTALL_FRONTEND=""
+  elif command_exists zypper; then
+    DISTRO="suse"
+    PKG_MGR="zypper"
+    UPDATE_CMD="zypper refresh"
+    INSTALL_CMD="zypper install -y"
+    INSTALL_FRONTEND=""
+  else
+    DISTRO="unknown"
+    PKG_MGR="apt"
+    UPDATE_CMD="apt-get update"
+    INSTALL_CMD="apt-get install -y"
+    INSTALL_FRONTEND="DEBIAN_FRONTEND=noninteractive"
+    log "WARN: Unknown distribution. Defaulting to apt-get."
+  fi
+  log "Detected distribution: $DISTRO, package manager: $PKG_MGR"
+}
+
+# Detect init system
+detect_init_system() {
+  if pidof systemd >/dev/null 2>&1; then
+    INIT_SYSTEM="systemd"
+  elif [ -f /etc/inittab ] && command_exists rc-status; then
+    INIT_SYSTEM="openrc"
+  elif [ -f /etc/inittab ]; then
+    INIT_SYSTEM="sysvinit"
+  else
+    INIT_SYSTEM="unknown"
+    log "WARN: Unknown init system. Some features may not work."
+  fi
+  log "Detected init system: $INIT_SYSTEM"
+}
+
+# Function to install packages (distro-agnostic)
+install_packages() {
+  local packages=("$@")
+  log "Installing packages: ${packages[*]}"
+  
+  if [ "$PKG_MGR" = "apk" ]; then
+    $UPDATE_CMD || true
+    $INSTALL_CMD "${packages[@]}" || true
+  elif [ -n "$INSTALL_FRONTEND" ]; then
+    $INSTALL_FRONTEND $UPDATE_CMD || true
+    $INSTALL_FRONTEND $INSTALL_CMD "${packages[@]}" || true
+  else
+    $UPDATE_CMD || true
+    $INSTALL_CMD "${packages[@]}" || true
+  fi
+}
+
+# Service management (distro-agnostic)
+enable_service() {
+  local service="$1"
+  log "Enabling service: $service"
+  
+  if [ "$INIT_SYSTEM" = "systemd" ]; then
+    systemctl enable --now "$service" >/dev/null 2>&1 || true
+  elif [ "$INIT_SYSTEM" = "openrc" ]; then
+    rc-update add "$service" default >/dev/null 2>&1 || true
+    rc-service "$service" start >/dev/null 2>&1 || true
+  elif [ "$INIT_SYSTEM" = "sysvinit" ]; then
+    update-rc.d "$service" defaults >/dev/null 2>&1 || true
+    service "$service" start >/dev/null 2>&1 || /etc/init.d/"$service" start >/dev/null 2>&1 || true
+  fi
 }
 
 # Ping with retries
@@ -136,35 +233,36 @@ detect_hardware_details() {
 
 # Check if the script is being run as root for setup
 if [[ "$(id -u)" -eq 0 ]]; then
+   detect_distro
+   detect_init_system
+   
    echo "WARNING: Running as root. Setup will be performed first."
    echo "After setup, run this script as a regular user to start the kiosk."
    # --- Setup Steps ---
    # --- 1. Install Browser (offline-friendly) ---
    echo "[+] Checking for browsers (Firefox preferred for modern web apps)..."
-   if command -v firefox >/dev/null 2>&1 || command -v google-chrome >/dev/null 2>&1; then
+   if command -v firefox >/dev/null 2>&1 || command -v google-chrome >/dev/null 2>&1 || command -v chromium >/dev/null 2>&1; then
      echo "[+] A browser is already installed. Skipping install."
    else
-     echo "[!] No browser found. Attempting to install Firefox via local repo if available..."
-     DEBIAN_FRONTEND=noninteractive apt-get update || true
-     DEBIAN_FRONTEND=noninteractive apt-get install -y firefox || DEBIAN_FRONTEND=noninteractive apt-get install -y firefox-esr || true
+     echo "[!] No browser found. Attempting to install Firefox..."
+     BROWSER_PKG="firefox"
+     if [ "$PKG_MGR" = "apt" ]; then
+       BROWSER_PKG="firefox-esr firefox"
+     elif [ "$PKG_MGR" = "pacman" ]; then
+       BROWSER_PKG="firefox"
+     elif [ "$PKG_MGR" = "apk" ]; then
+       BROWSER_PKG="firefox"
+     fi
+     install_packages $BROWSER_PKG
      if ! command -v firefox >/dev/null 2>&1; then
-       echo "[!] Could not install Firefox automatically. If offline, copy firefox .deb packages via USB and run: dpkg -i <package>.deb; DEBIAN_FRONTEND=noninteractive apt-get -f install"
+       echo "[!] Could not install Firefox automatically. Please install it manually."
        echo "[i] Note: Midori is NOT recommended as it cannot handle modern web frameworks (Tailwind CSS, Next.js)."
      fi
    fi
 
    # --- 1.5 Install Utilities (jq for command parsing) ---
-   echo "[+] Checking for jq..."
-   if ! command_exists jq; then
-     echo "[+] Installing jq..."
-     DEBIAN_FRONTEND=noninteractive apt-get install -y jq || true
-   else
-     echo "[+] jq is already installed."
-   fi
-
-   # --- 1.6 Install kiosk utilities for Mint (unclutter, xdotool) ---
-   echo "[+] Ensuring 'unclutter' (hide mouse) and 'xdotool' (window control) are installed..."
-   DEBIAN_FRONTEND=noninteractive apt-get install -y unclutter xdotool >/dev/null 2>&1 || true
+   echo "[+] Installing utilities (jq, unclutter, xdotool)..."
+   install_packages jq unclutter xdotool
 
    # --- 1.7 Configure DNS suffix and gateway for Mustaqbal.HB network ---
    echo "[+] Configuring DNS suffix (Mustaqbal.HB) and gateway (10.1.1.70)..."
@@ -211,8 +309,8 @@ if [[ "$(id -u)" -eq 0 ]]; then
    # --- 1.8 Enable SSH server and set credentials (tahar/tahar) ---
    echo "[+] Enabling SSH and configuring credentials (user: tahar / pass: tahar)..."
    # Install OpenSSH server if missing
-   if ! dpkg -s openssh-server >/dev/null 2>&1; then
-     DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server >/dev/null 2>&1 || true
+   if ! command_exists sshd; then
+     install_packages openssh-server openssh
    fi
    # Ensure user 'tahar' exists and set password
    if ! id -u tahar >/dev/null 2>&1; then
@@ -234,7 +332,7 @@ if [[ "$(id -u)" -eq 0 ]]; then
      sed -i 's/^#\?KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config || true
      sed -i 's/^#\?UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config || true
    fi
-   systemctl enable --now ssh >/dev/null 2>&1 || systemctl enable --now sshd >/dev/null 2>&1 || true
+   enable_service ssh || enable_service sshd
    # Persist in client config for reference
    {
      echo "SSH_ENABLE=\"true\"";
@@ -567,32 +665,66 @@ BASHPROF
 EOF_OFFLINE
    fi
 
-   # --- 7. Create cleanup script that runs on boot ---
+   # --- 7. Create comprehensive cleanup script that runs on boot ---
    echo "[+] Creating boot cleanup script..."
    cat > /usr/local/bin/kiosk-cleanup-on-boot.sh << 'EOCLEANUP'
 #!/bin/bash
-# Clean browser data on boot for all users
-for user_home in /home/*; do
-  if [[ -d "$user_home" ]]; then
-    # Chrome/Chromium
-    rm -rf "$user_home"/.config/google-chrome/Default/Session* 2>/dev/null || true
-    rm -rf "$user_home"/.config/google-chrome/Default/Cookies* 2>/dev/null || true
-    rm -rf "$user_home"/.config/chromium/Default/Session* 2>/dev/null || true
-    rm -rf "$user_home"/.cache/google-chrome/* 2>/dev/null || true
-    rm -rf "$user_home"/.cache/chromium/* 2>/dev/null || true
-    # Firefox
-    find "$user_home"/.mozilla/firefox -name "sessionstore*" -delete 2>/dev/null || true
+# Comprehensive browser data cleanup on boot for all users
+
+# Source the enhanced cache clearing functions from main script
+if [[ -f /usr/local/bin/kiosk-client.sh ]]; then
+  source <(sed -n '/^# ENHANCED BROWSER CACHE CLEARING/,/^# Wrapper for backward compatibility/p' /usr/local/bin/kiosk-client.sh 2>/dev/null || true)
+fi
+
+# Fallback inline cleanup if sourcing failed
+if ! command -v clear_chrome_cache >/dev/null 2>&1; then
+  clear_chrome_cache() {
+    local user_home="$1"
+    for chrome_dir in "$user_home"/.config/{google-chrome,chromium,chrome} "$user_home"/.var/app/com.google.Chrome "$user_home"/snap/chromium/common/chromium; do
+      [[ -d "$chrome_dir" ]] && {
+        find "$chrome_dir" -type d \( -name "Default" -o -name "Profile *" \) 2>/dev/null | while read -r profile; do
+          rm -rf "$profile"/{Session*,'Current Session','Current Tabs','Last Session','Last Tabs'} 2>/dev/null || true
+          rm -rf "$profile"/{Cookies*,'Local Storage','Session Storage',IndexedDB} 2>/dev/null || true
+          rm -rf "$profile"/{Cache*,'Service Worker','Code Cache',GPUCache} 2>/dev/null || true
+        done
+      }
+    done
+    rm -rf "$user_home"/.cache/{google-chrome,chromium,chrome}/* 2>/dev/null || true
+  }
+  
+  clear_firefox_cache() {
+    local user_home="$1"
+    for ff_dir in "$user_home"/.mozilla/firefox "$user_home"/.var/app/org.mozilla.firefox/.mozilla/firefox "$user_home"/snap/firefox/common/.mozilla/firefox; do
+      [[ -d "$ff_dir" ]] && {
+        find "$ff_dir" -maxdepth 1 -type d -name "*.default*" 2>/dev/null | while read -r profile; do
+          rm -f "$profile"/sessionstore* "$profile"/sessionCheckpoints.json 2>/dev/null || true
+          rm -f "$profile"/cookies.sqlite* 2>/dev/null || true
+          rm -rf "$profile"/{storage*,cache2,startupCache,OfflineCache,indexedDB,databases} 2>/dev/null || true
+        done
+      }
+    done
     rm -rf "$user_home"/.cache/mozilla/* 2>/dev/null || true
-  fi
+  }
+fi
+
+# Clean all user home directories
+for user_home in /home/* /root; do
+  [[ -d "$user_home" ]] && {
+    clear_chrome_cache "$user_home"
+    clear_firefox_cache "$user_home"
+  }
 done
+
+echo "$(date): Browser cleanup complete" >> /var/log/kiosk-cleanup.log
 EOCLEANUP
    chmod +x /usr/local/bin/kiosk-cleanup-on-boot.sh
    
-   # Create systemd service to run cleanup on boot
-   cat > /etc/systemd/system/kiosk-cleanup.service << 'EOSVC'
+   # Create service based on init system
+   if [ "$INIT_SYSTEM" = "systemd" ]; then
+     cat > /etc/systemd/system/kiosk-cleanup.service << 'EOSVC'
 [Unit]
 Description=Kiosk Browser Cleanup on Boot
-Before=display-manager.service lightdm.service gdm.service
+Before=display-manager.service
 
 [Service]
 Type=oneshot
@@ -602,7 +734,30 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOSVC
-   systemctl enable kiosk-cleanup.service 2>/dev/null || true
+     systemctl enable kiosk-cleanup.service 2>/dev/null || true
+   elif [ "$INIT_SYSTEM" = "openrc" ]; then
+     cat > /etc/init.d/kiosk-cleanup << 'EORC'
+#!/sbin/openrc-run
+command="/usr/local/bin/kiosk-cleanup-on-boot.sh"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+depend() {
+    before display-manager
+}
+EORC
+     chmod +x /etc/init.d/kiosk-cleanup
+     rc-update add kiosk-cleanup boot 2>/dev/null || true
+   else
+     # SysVinit fallback - add to rc.local
+     if [ -f /etc/rc.local ]; then
+       grep -q "kiosk-cleanup-on-boot.sh" /etc/rc.local || \
+       sed -i -e '$i /usr/local/bin/kiosk-cleanup-on-boot.sh\n' /etc/rc.local
+     fi
+   fi
+   
+   echo "[+] Performing initial cache clear for all users..."
+   clear_all_browser_cache
+   
    echo "[+] Boot cleanup service installed"
 
    echo "[+] Setup complete!"
@@ -617,8 +772,12 @@ if [[ "$(id -u)" -eq 0 ]]; then
    exit 1
 fi
 
+# Detect system for user mode
+detect_distro
+detect_init_system
 
 # --- Browser Detection and Setup ---
+log "=== Kiosk Client Starting ==="
 log "Detecting available browsers and system state..."
 validate_network || true
 hardware_summary || true
@@ -646,6 +805,7 @@ mem_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null)
 if command_exists "firefox"; then
   log "Found Firefox. Using it for kiosk mode (best for modern web apps)."
   BROWSER_EXECUTABLE="firefox"
+  BROWSER_TYPE="firefox"
   BROWSER_ARGS="-kiosk --fullscreen --no-first-run --disable-default-browser-check --disable-extensions --disable-plugins --disable-session-restore --no-remote --private-window --width=${RESOLUTION%,*} --height=${RESOLUTION#*,}"
   # Warn if low RAM
   if [[ -n "$mem_mb" && "$mem_mb" -le 2048 ]]; then
@@ -654,12 +814,18 @@ if command_exists "firefox"; then
 elif command_exists "google-chrome"; then
   log "Using Google Chrome for kiosk mode."
   BROWSER_EXECUTABLE="google-chrome"
+  BROWSER_TYPE="chrome"
   BROWSER_ARGS="--kiosk --no-first-run --disable-infobars --disable-crash-reporter --disable-session-crashed-bubble --disable-features=TranslateUI --no-default-browser-check --start-fullscreen --window-size=${RESOLUTION} --window-position=0,0"
   if [[ -n "$mem_mb" && "$mem_mb" -le 2048 ]]; then
     log "WARN: Only ${mem_mb}MB RAM detected. Chrome may be slow. Consider upgrading to 4GB RAM for better performance."
   fi
+elif command_exists "chromium"; then
+  log "Using Chromium for kiosk mode."
+  BROWSER_EXECUTABLE="chromium"
+  BROWSER_TYPE="chromium"
+  BROWSER_ARGS="--kiosk --no-first-run --disable-infobars --start-fullscreen --window-size=${RESOLUTION} --window-position=0,0"
 else
-  log "ERROR: No supported browser found (Firefox/Chrome). Please install Firefox from local repo or via USB (dpkg -i)."
+  log "ERROR: No supported browser found (Firefox/Chrome/Chromium). Please install Firefox from local repo or via USB (dpkg -i)."
   log "Note: Midori is not recommended as it cannot handle modern web frameworks (Tailwind CSS, Next.js)."
   echo "Server down, check cables | No browser available"
   exit 1
@@ -781,6 +947,14 @@ EOF
               if is_running; then kill "$BROWSER_PID" 2>/dev/null; fi
             fi
             ;;
+          clear_cache)
+            log "Clear cache command received"
+            quick_cache_clear "$BROWSER_TYPE"
+            if is_running; then 
+              log "Restarting browser with cleared cache..."
+              kill "$BROWSER_PID" 2>/dev/null
+            fi
+            ;;
           *)
             log "Unknown command type: $type"
             ;;
@@ -852,15 +1026,215 @@ log "Browser cleanup complete - starting fresh session"
 log "Press Ctrl+C in this terminal to stop the kiosk script."
   log "To exit kiosk mode, press Ctrl+Alt+Shift+Q - this will close the browser."
 
-clean_browser_data() {
-  # Quick cleanup before launching browser
-  if [[ "$BROWSER_EXECUTABLE" == "google-chrome" ]] || [[ "$BROWSER_EXECUTABLE" =~ chromium ]]; then
-    rm -rf ~/.config/google-chrome/Default/Session* 2>/dev/null || true
-    rm -rf ~/.config/chromium/Default/Session* 2>/dev/null || true
-  elif [[ "$BROWSER_EXECUTABLE" =~ firefox ]]; then
-    FF_PROFILE=$(find ~/.mozilla/firefox -maxdepth 1 -name "*.default*" -type d 2>/dev/null | head -n1)
-    [[ -n "$FF_PROFILE" ]] && rm -rf "$FF_PROFILE"/sessionstore* 2>/dev/null || true
+# ==============================================================================
+# ENHANCED BROWSER CACHE CLEARING FUNCTIONS
+# ==============================================================================
+
+# Comprehensive cache clearing for Chrome/Chromium (all variants including Flatpak/Snap)
+clear_chrome_cache() {
+  local user_home="$1"
+  log "Clearing Chrome/Chromium cache for: $user_home"
+  
+  # Chrome variants to check
+  local chrome_paths=(
+    "$user_home/.config/google-chrome"
+    "$user_home/.config/chromium"
+    "$user_home/.config/chrome"
+    "$user_home/.var/app/com.google.Chrome"  # Flatpak
+    "$user_home/snap/chromium/common/chromium" # Snap
+  )
+  
+  for chrome_path in "${chrome_paths[@]}"; do
+    if [[ -d "$chrome_path" ]]; then
+      # Clear all profiles (Default, Profile 1, Profile 2, etc.)
+      find "$chrome_path" -maxdepth 1 -type d \( -name "Default" -o -name "Profile *" \) 2>/dev/null | while read -r profile; do
+        # Session and state files
+        rm -rf "$profile"/Session* 2>/dev/null || true
+        rm -rf "$profile"/'Current Session' 2>/dev/null || true
+        rm -rf "$profile"/'Current Tabs' 2>/dev/null || true
+        rm -rf "$profile"/'Last Session' 2>/dev/null || true
+        rm -rf "$profile"/'Last Tabs' 2>/dev/null || true
+        
+        # Cookies and storage
+        rm -rf "$profile"/Cookies* 2>/dev/null || true
+        rm -rf "$profile"/'Local Storage' 2>/dev/null || true
+        rm -rf "$profile"/'Session Storage' 2>/dev/null || true
+        rm -rf "$profile"/'IndexedDB' 2>/dev/null || true
+        
+        # Cache directories
+        rm -rf "$profile"/Cache* 2>/dev/null || true
+        rm -rf "$profile"/'Service Worker' 2>/dev/null || true
+        rm -rf "$profile"/'Code Cache' 2>/dev/null || true
+        rm -rf "$profile"/'GPUCache' 2>/dev/null || true
+        
+        # Application cache and misc
+        rm -rf "$profile"/'Application Cache' 2>/dev/null || true
+        rm -rf "$profile"/'Media Cache' 2>/dev/null || true
+        rm -rf "$profile"/Databases 2>/dev/null || true
+        rm -rf "$profile"/FileSystem 2>/dev/null || true
+      done
+      
+      # Clear ShaderCache (shared across profiles)
+      rm -rf "$chrome_path"/ShaderCache 2>/dev/null || true
+    fi
+  done
+  
+  # System cache directories
+  local cache_paths=(
+    "$user_home/.cache/google-chrome"
+    "$user_home/.cache/chromium"
+    "$user_home/.cache/chrome"
+  )
+  
+  for cache_path in "${cache_paths[@]}"; do
+    if [[ -d "$cache_path" ]]; then
+      rm -rf "$cache_path"/* 2>/dev/null || true
+    fi
+  done
+}
+
+# Comprehensive cache clearing for Firefox (all variants including Flatpak/Snap)
+clear_firefox_cache() {
+  local user_home="$1"
+  log "Clearing Firefox cache for: $user_home"
+  
+  # Firefox profile locations
+  local firefox_paths=(
+    "$user_home/.mozilla/firefox"
+    "$user_home/.var/app/org.mozilla.firefox/.mozilla/firefox" # Flatpak
+    "$user_home/snap/firefox/common/.mozilla/firefox" # Snap
+  )
+  
+  for firefox_path in "${firefox_paths[@]}"; do
+    if [[ -d "$firefox_path" ]]; then
+      # Find all profiles (*.default, *.default-release, etc.)
+      find "$firefox_path" -maxdepth 1 -type d -name "*.default*" 2>/dev/null | while read -r profile; do
+        # Session files
+        rm -f "$profile"/sessionstore* 2>/dev/null || true
+        rm -f "$profile"/sessionCheckpoints.json 2>/dev/null || true
+        
+        # Cookies and storage
+        rm -f "$profile"/cookies.sqlite* 2>/dev/null || true
+        rm -rf "$profile"/storage 2>/dev/null || true
+        rm -rf "$profile"/storage.sqlite 2>/dev/null || true
+        
+        # Cache directories
+        rm -rf "$profile"/cache2 2>/dev/null || true
+        rm -rf "$profile"/startupCache 2>/dev/null || true
+        rm -rf "$profile"/OfflineCache 2>/dev/null || true
+        
+        # IndexedDB and other storage
+        rm -rf "$profile"/indexedDB 2>/dev/null || true
+        rm -rf "$profile"/databases 2>/dev/null || true
+        
+        # Thumbnails and misc
+        rm -rf "$profile"/thumbnails 2>/dev/null || true
+        rm -rf "$profile"/saved-telemetry-pings 2>/dev/null || true
+        rm -f "$profile"/webappsstore.sqlite* 2>/dev/null || true
+        rm -f "$profile"/places.sqlite* 2>/dev/null || true
+      done
+    fi
+  done
+  
+  # System cache directories
+  local cache_paths=(
+    "$user_home/.cache/mozilla/firefox"
+    "$user_home/.cache/mozilla"
+  )
+  
+  for cache_path in "${cache_paths[@]}"; do
+    if [[ -d "$cache_path" ]]; then
+      rm -rf "$cache_path"/* 2>/dev/null || true
+    fi
+  done
+}
+
+# Clear cache for other browsers (Brave, Vivaldi, Edge, etc.)
+clear_other_browser_cache() {
+  local user_home="$1"
+  
+  # Brave
+  if [[ -d "$user_home/.config/BraveSoftware" ]]; then
+    find "$user_home/.config/BraveSoftware/Brave-Browser" -name "Session*" -delete 2>/dev/null || true
+    find "$user_home/.config/BraveSoftware/Brave-Browser" -name "Cookies*" -delete 2>/dev/null || true
+    rm -rf "$user_home/.cache/BraveSoftware" 2>/dev/null || true
   fi
+  
+  # Vivaldi
+  if [[ -d "$user_home/.config/vivaldi" ]]; then
+    find "$user_home/.config/vivaldi" -name "Session*" -delete 2>/dev/null || true
+    rm -rf "$user_home/.cache/vivaldi" 2>/dev/null || true
+  fi
+  
+  # Edge
+  if [[ -d "$user_home/.config/microsoft-edge" ]]; then
+    find "$user_home/.config/microsoft-edge" -name "Session*" -delete 2>/dev/null || true
+    rm -rf "$user_home/.cache/microsoft-edge" 2>/dev/null || true
+  fi
+}
+
+# Quick cache clear for current user only (used before each browser launch)
+quick_cache_clear() {
+  local browser_type="$1"
+  
+  case "$browser_type" in
+    chrome|chromium)
+      clear_chrome_cache "$HOME"
+      ;;
+    firefox)
+      clear_firefox_cache "$HOME"
+      ;;
+    *)
+      # Clear all if browser type unknown
+      clear_chrome_cache "$HOME"
+      clear_firefox_cache "$HOME"
+      clear_other_browser_cache "$HOME"
+      ;;
+  esac
+}
+
+# Master cache clearing function - works for all users (if root)
+clear_all_browser_cache() {
+  local current_user="$USER"
+  local current_home="$HOME"
+  
+  log "=== Starting comprehensive browser cache clearing ==="
+  
+  # Clear cache for current user
+  if [[ -n "$current_home" && -d "$current_home" ]]; then
+    log "Clearing cache for current user: $current_user"
+    clear_chrome_cache "$current_home"
+    clear_firefox_cache "$current_home"
+    clear_other_browser_cache "$current_home"
+  fi
+  
+  # If running as root, clear cache for all users
+  if [[ "$(id -u)" -eq 0 ]]; then
+    log "Running as root - clearing cache for all users"
+    for user_home in /home/* /root; do
+      if [[ -d "$user_home" && "$user_home" != "$current_home" ]]; then
+        local username
+        username=$(basename "$user_home")
+        log "Clearing cache for user: $username"
+        clear_chrome_cache "$user_home"
+        clear_firefox_cache "$user_home"
+        clear_other_browser_cache "$user_home"
+      fi
+    done
+  fi
+  
+  log "=== Browser cache clearing complete ==="
+}
+
+# Wrapper for backward compatibility
+clean_browser_data() {
+  log "Cleaning browser cache and session data..."
+  if [[ -n "$BROWSER_TYPE" ]]; then
+    quick_cache_clear "$BROWSER_TYPE"
+  else
+    quick_cache_clear "unknown"
+  fi
+  log "Browser cleanup complete"
 }
 
 launch_browser() {

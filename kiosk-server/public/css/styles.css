@@ -356,6 +356,76 @@ body {
 .toast .toast-title { font-weight: 700; margin-bottom: 2px; }
 .toast .toast-msg { opacity: 0.9; }
 
+/* Client action buttons (non-intrusive, compact design) */
+.client-actions {
+    position: fixed;
+    bottom: 15px;
+    right: 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 1000;
+    opacity: 0.3;
+    transition: opacity 0.3s ease;
+}
+
+.client-actions:hover {
+    opacity: 1;
+}
+
+.action-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    border-radius: 8px;
+    background: rgba(26, 35, 126, 0.9);
+    color: white;
+    border: none;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    backdrop-filter: blur(10px);
+}
+
+.action-btn:hover {
+    transform: scale(1.1);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.action-btn:active {
+    transform: scale(0.95);
+}
+
+.action-btn svg {
+    flex-shrink: 0;
+}
+
+/* Warning button (Restart) */
+.action-btn-warning {
+    background: rgba(245, 158, 11, 0.9);
+}
+
+.action-btn-warning:hover {
+    background: rgba(217, 119, 6, 0.95);
+}
+
+/* Danger button (Shutdown) */
+.action-btn-danger {
+    background: rgba(239, 68, 68, 0.9);
+}
+
+.action-btn-danger:hover {
+    background: rgba(220, 38, 38, 0.95);
+}
+
+/* Hide action buttons in admin view, show only in client view */
+body:not(.client-mode) .client-actions {
+    display: none;
+}
+
 /* Responsive design */
 @media (max-width: 768px) {
     .kiosk-header {
@@ -373,4 +443,21 @@ body {
         padding: 1rem;
     }
     .kiosk-stage { height: 50vh; }
+    
+    /* Make action buttons slightly smaller on mobile */
+    .action-btn {
+        width: 38px;
+        height: 38px;
+    }
+    
+    .action-btn svg {
+        width: 18px;
+        height: 18px;
+    }
+    
+    .client-actions {
+        bottom: 10px;
+        right: 10px;
+        opacity: 0.5;
+    }
 }

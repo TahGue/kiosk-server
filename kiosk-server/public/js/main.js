@@ -86,6 +86,9 @@ function applyConfig(cfg) {
     const disableContextMenu = !!cfg.disableContextMenu;
     const disableShortcuts = !!cfg.disableShortcuts;
     window.__kioskFlags = { disableContextMenu, disableShortcuts };
+    
+    // Dispatch config update event for home button tracking
+    window.dispatchEvent(new CustomEvent('kioskConfigUpdate', { detail: cfg }));
 }
 
 // Setup SSE to receive config and actions
@@ -210,6 +213,143 @@ function initKiosk() {
                 return false;
             }
         });
+        
+        // Setup client action buttons (home, restart, shutdown)
+        document.body.classList.add('client-mode');
+        const clientActions = document.getElementById('client-actions');
+        const homeButton = document.getElementById('home-button');
+        const restartButton = document.getElementById('restart-button');
+        const shutdownButton = document.getElementById('shutdown-button');
+        
+        if (clientActions) {
+            clientActions.classList.remove('hidden');
+        }
+        
+        // Store the home URL and client ID
+        let homeUrl = '';
+        let clientId = '';
+        
+        // Generate or retrieve client ID
+        try {
+            clientId = localStorage.getItem('kioskClientId');
+            if (!clientId) {
+                clientId = `client-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                localStorage.setItem('kioskClientId', clientId);
+            }
+        } catch (e) {
+            clientId = `client-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        }
+        
+        // Listen for config updates to track the home URL
+        window.addEventListener('kioskConfigUpdate', (e) => {
+            if (e.detail && e.detail.kioskUrl) {
+                homeUrl = e.detail.kioskUrl;
+            }
+        });
+        
+        // Home button click handler
+        if (homeButton) {
+            homeButton.addEventListener('click', () => {
+                const frame = document.getElementById('kiosk-frame');
+                if (frame) {
+                    const targetUrl = homeUrl || frame.src;
+                    if (targetUrl && targetUrl !== 'about:blank') {
+                        frame.src = targetUrl;
+                        console.log('Home button clicked - reloading:', targetUrl);
+                        showToast({
+                            title: 'Home',
+                            message: 'Returning to home page',
+                            level: 'info',
+                            timeout: 2000
+                        });
+                    }
+                }
+            });
+        }
+        
+        // Restart button click handler
+        if (restartButton) {
+            restartButton.addEventListener('click', async () => {
+                const confirmed = confirm('Are you sure you want to restart this device?');
+                if (!confirmed) return;
+                
+                try {
+                    showToast({
+                        title: 'Restarting',
+                        message: 'Device will restart in a moment...',
+                        level: 'warn',
+                        timeout: 3000
+                    });
+                    
+                    // Send restart command via heartbeat API
+                    const response = await fetch('/api/heartbeat/command', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            target: clientId,
+                            type: 'reboot',
+                            payload: {}
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('Failed to send restart command');
+                    }
+                    
+                    console.log('Restart command sent successfully');
+                } catch (err) {
+                    console.error('Restart error:', err);
+                    showToast({
+                        title: 'Error',
+                        message: 'Failed to restart device',
+                        level: 'error',
+                        timeout: 3000
+                    });
+                }
+            });
+        }
+        
+        // Shutdown button click handler
+        if (shutdownButton) {
+            shutdownButton.addEventListener('click', async () => {
+                const confirmed = confirm('Are you sure you want to shutdown this device?');
+                if (!confirmed) return;
+                
+                try {
+                    showToast({
+                        title: 'Shutting Down',
+                        message: 'Device will shutdown in a moment...',
+                        level: 'warn',
+                        timeout: 3000
+                    });
+                    
+                    // Send shutdown command via heartbeat API
+                    const response = await fetch('/api/heartbeat/command', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            target: clientId,
+                            type: 'shutdown',
+                            payload: {}
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('Failed to send shutdown command');
+                    }
+                    
+                    console.log('Shutdown command sent successfully');
+                } catch (err) {
+                    console.error('Shutdown error:', err);
+                    showToast({
+                        title: 'Error',
+                        message: 'Failed to shutdown device',
+                        level: 'error',
+                        timeout: 3000
+                    });
+                }
+            });
+        }
 
     // Lightweight SPA navigation by hash
     const sections = {

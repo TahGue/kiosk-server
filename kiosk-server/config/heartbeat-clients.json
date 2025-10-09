@@ -5,7 +5,7 @@
     "hostname": "tahar-Latitude-E7450",
     "version": "kiosk-client-1.1.0",
     "status": "ok",
-    "currentUrl": "http://www.mustaqbal.hb.local",
-    "lastSeen": "2025-10-08T13:32:36.626Z"
+    "currentUrl": "http://10.1.1.63:3002",
+    "lastSeen": "2025-10-09T10:47:50.784Z"
   }
 }

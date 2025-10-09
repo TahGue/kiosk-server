@@ -161,6 +161,27 @@
                 <!-- Kiosk content frame (used for client view and admin preview) -->
                 <iframe id="kiosk-frame" title="Kiosk Frame" src="about:blank" style="width:100%; height:60vh; border:1px solid #ddd; border-radius:6px; background:#fff;"></iframe>
                 <div id="blackout-overlay" class="blackout hidden"></div>
+                <!-- Action buttons for client view (non-intrusive) -->
+                <div id="client-actions" class="client-actions hidden">
+                    <button id="home-button" class="action-btn" title="Return to Home Page">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                            <polyline points="9 22 9 12 15 12 15 22"></polyline>
+                        </svg>
+                    </button>
+                    <button id="restart-button" class="action-btn action-btn-warning" title="Restart Device">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="23 4 23 10 17 10"></polyline>
+                            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                        </svg>
+                    </button>
+                    <button id="shutdown-button" class="action-btn action-btn-danger" title="Shutdown Device">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+                            <line x1="12" y1="2" x2="12" y2="12"></line>
+                        </svg>
+                    </button>
+                </div>
             </div>
 
         </main>
