@@ -1,5 +1,5 @@
 {
-  "kioskUrl": "http://10.1.1.63:3002",
+  "kioskUrl": "http://www.mustaqbal.hb.local/login",
   "title": "Kiosk Display",
   "footerText": "© 2025 Kiosk System",
   "timezone": "Europe/Berlin",

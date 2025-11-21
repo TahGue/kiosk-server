@@ -1,11 +1,20 @@
 {
-  "tahar-Latitude-E7450-245db50d6d7f472f809a9fa7f9d1ccba": {
-    "id": "tahar-Latitude-E7450-245db50d6d7f472f809a9fa7f9d1ccba",
-    "ip": "10.1.1.26",
+  "tahar-Latitude-E7450-f05094209f8a45418f39cd3ad48d4327": {
+    "id": "tahar-Latitude-E7450-f05094209f8a45418f39cd3ad48d4327",
+    "ip": "10.1.1.18",
     "hostname": "tahar-Latitude-E7450",
     "version": "kiosk-client-1.1.0",
     "status": "ok",
-    "currentUrl": "http://10.1.1.63:3002",
-    "lastSeen": "2025-10-09T10:47:50.784Z"
+    "currentUrl": "http://www.mustaqbal.hb.local/login",
+    "lastSeen": "2025-11-21T06:33:31.709Z"
+  },
+  "tahar-Latitude-E7450-f8b7ae69ac2e4cbe8926897a336521dc": {
+    "id": "tahar-Latitude-E7450-f8b7ae69ac2e4cbe8926897a336521dc",
+    "ip": "10.1.1.11",
+    "hostname": "tahar-Latitude-E7450",
+    "version": "kiosk-client-1.1.0",
+    "status": "ok",
+    "currentUrl": "http://www.mustaqbal.hb.local/login",
+    "lastSeen": "2025-11-21T06:33:43.947Z"
   }
 }

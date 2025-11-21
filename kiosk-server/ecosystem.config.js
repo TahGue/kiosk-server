@@ -6,7 +6,7 @@ module.exports = {
       cwd: __dirname,
       
       // Cluster mode with 2 instances (adjust based on CPU cores)
-      instances: 2,
+      instances: 1,
       exec_mode: 'cluster',
       
       // Auto restart on file changes (disable in production)

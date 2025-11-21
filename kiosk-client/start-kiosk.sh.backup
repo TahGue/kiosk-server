@@ -3,7 +3,9 @@
 # ==============================================================================
 # Kiosk Client Startup Script for Multiple Linux Distributions
 # ==============================================================================
-# Enhanced version with multi-distro support and comprehensive cache clearing
+# Enhanced version with multi-distro support, comprehensive cache clearing,
+# reliable full-screen kiosk mode, and automatic startup on boot.
+# Ensures Unix line endings and no need for dos2unix conversion.
 # Supports: Alpine, Debian-based, RPM-based (Fedora/RHEL), Arch, SUSE, and others.
 # Display Managers: LightDM, GDM, SDDM, SLiM, and no-DM configurations.
 # Init Systems: systemd, OpenRC, SysVinit
@@ -28,51 +30,6 @@ SERVER_CANDIDATES=(
 )
 
 # Logging
-DEBUG=${DEBUG:-0}
-
-# --- Hostname helpers ---
-valid_hostname() {
-  local hn="$1"
-  # Basic RFC-1123 label validation: letters, digits, hyphen; cannot start/end with hyphen
-  # Allow dots for FQDN; overall length <= 253
-  [[ -n "$hn" ]] || return 1
-  (( ${#hn} <= 253 )) || return 1
-  # Each label 1-63 chars, alnum/hyphen, not starting/ending with hyphen
-  IFS='.' read -r -a labels <<< "$hn"
-  for lbl in "${labels[@]}"; do
-    [[ ${#lbl} -ge 1 && ${#lbl} -le 63 ]] || return 1
-    [[ "$lbl" =~ ^[A-Za-z0-9]([-A-Za-z0-9]*[A-Za-z0-9])?$ ]] || return 1
-  done
-  return 0
-}
-
-set_system_hostname() {
-  # usage: set_system_hostname NEW_HOSTNAME
-  local newhn="$1"
-  if ! valid_hostname "$newhn"; then
-    log "Invalid hostname requested: '$newhn'"; return 1
-  fi
-  local oldhn
-  oldhn=$(hostname 2>/dev/null || echo "")
-  # Prefer dedicated root helper if present (created during setup)
-  if [[ -x /usr/local/sbin/kiosk-hostname-apply ]]; then
-    if ! sudo /usr/local/sbin/kiosk-hostname-apply "$newhn"; then
-      log "Hostname helper failed"; return 1; fi
-  elif command -v hostnamectl >/dev/null 2>&1; then
-    sudo hostnamectl set-hostname "$newhn" 2>/dev/null || return 1
-  else
-    echo "$newhn" | sudo tee /etc/hostname >/dev/null || return 1
-    # Update current kernel hostname
-    sudo hostname "$newhn" 2>/dev/null || true
-  fi
-  # Update /etc/hosts mapping for 127.0.1.1 or add if missing
-  if grep -qE '^127\.0\.1\.1\s' /etc/hosts 2>/dev/null; then
-    sudo sed -i "s/^127\.0\.1\.1\s\+.*$/127.0.1.1\t$newhn/" /etc/hosts 2>/dev/null || true
-  else
-    echo -e "127.0.1.1\t$newhn" | sudo tee -a /etc/hosts >/dev/null || true
-  fi
-  log "Hostname changed: '$oldhn' -> '$newhn'"
-}
 LOG_FILE="/var/log/kiosk-client.log"
 fallback_log="$HOME/.local/share/kiosk-client.log"
 mkdir -p "$(dirname "$fallback_log")" >/dev/null 2>&1 || true
@@ -87,202 +44,6 @@ log() {
     echo "$msg" >> "$fallback_log"
   fi
   echo "$msg"
-}
-
-vlog() {
-  # Verbose log when DEBUG=1
-  if [[ "$DEBUG" = "1" ]]; then
-    log "DEBUG: $*"
-  fi
-}
-
-# Accept --debug flag
-if [[ "${1:-}" == "--debug" ]]; then
-  DEBUG=1
-  shift
-  log "DEBUG mode enabled"
-fi
-
-# Single source of truth for client identity/version
-CLIENT_NAME="kiosk-client"
-VERSION="1.1.0"
-# Current script path
-CURRENT_SCRIPT="$(readlink -f "$0")"
-
-# ============================================================================== 
-# ENHANCED BROWSER CACHE CLEARING FUNCTIONS
-# Moved here so they are defined before being used during root setup
-# ============================================================================== 
-
-clear_chrome_cache() {
-  local user_home="$1"
-  log "Clearing Chrome/Chromium cache for: $user_home"
-  
-  local chrome_paths=(
-    "$user_home/.config/google-chrome"
-    "$user_home/.config/chromium"
-    "$user_home/.config/chrome"
-    "$user_home/.var/app/com.google.Chrome"
-    "$user_home/snap/chromium/common/chromium"
-  )
-  
-  for chrome_path in "${chrome_paths[@]}"; do
-    if [[ -d "$chrome_path" ]]; then
-      find "$chrome_path" -maxdepth 1 -type d \( -name "Default" -o -name "Profile *" \) 2>/dev/null | while read -r profile; do
-        rm -rf "$profile"/Session* 2>/dev/null || true
-        rm -rf "$profile"/'Current Session' 2>/dev/null || true
-        rm -rf "$profile"/'Current Tabs' 2>/dev/null || true
-        rm -rf "$profile"/'Last Session' 2>/dev/null || true
-        rm -rf "$profile"/'Last Tabs' 2>/dev/null || true
-        rm -rf "$profile"/Cookies* 2>/dev/null || true
-        rm -rf "$profile"/'Local Storage' 2>/dev/null || true
-        rm -rf "$profile"/'Session Storage' 2>/dev/null || true
-        rm -rf "$profile"/'IndexedDB' 2>/dev/null || true
-        rm -rf "$profile"/Cache* 2>/dev/null || true
-        rm -rf "$profile"/'Service Worker' 2>/dev/null || true
-        rm -rf "$profile"/'Code Cache' 2>/dev/null || true
-        rm -rf "$profile"/'GPUCache' 2>/dev/null || true
-        rm -rf "$profile"/'Application Cache' 2>/dev/null || true
-        rm -rf "$profile"/'Media Cache' 2>/dev/null || true
-        rm -rf "$profile"/Databases 2>/dev/null || true
-        rm -rf "$profile"/FileSystem 2>/dev/null || true
-      done
-      rm -rf "$chrome_path"/ShaderCache 2>/dev/null || true
-    fi
-  done
-  
-  local cache_paths=(
-    "$user_home/.cache/google-chrome"
-    "$user_home/.cache/chromium"
-    "$user_home/.cache/chrome"
-  )
-  
-  for cache_path in "${cache_paths[@]}"; do
-    if [[ -d "$cache_path" ]]; then
-      rm -rf "$cache_path"/* 2>/dev/null || true
-    fi
-  done
-}
-
-clear_firefox_cache() {
-  local user_home="$1"
-  log "Clearing Firefox cache for: $user_home"
-  
-  local firefox_paths=(
-    "$user_home/.mozilla/firefox"
-    "$user_home/.var/app/org.mozilla.firefox/.mozilla/firefox"
-    "$user_home/snap/firefox/common/.mozilla/firefox"
-  )
-  
-  for firefox_path in "${firefox_paths[@]}"; do
-    if [[ -d "$firefox_path" ]]; then
-      find "$firefox_path" -maxdepth 1 -type d -name "*.default*" 2>/dev/null | while read -r profile; do
-        rm -f "$profile"/sessionstore* 2>/dev/null || true
-        rm -f "$profile"/sessionCheckpoints.json 2>/dev/null || true
-        rm -f "$profile"/cookies.sqlite* 2>/dev/null || true
-        rm -rf "$profile"/storage 2>/dev/null || true
-        rm -rf "$profile"/storage.sqlite 2>/dev/null || true
-        rm -rf "$profile"/cache2 2>/dev/null || true
-        rm -rf "$profile"/startupCache 2>/dev/null || true
-        rm -rf "$profile"/OfflineCache 2>/dev/null || true
-        rm -rf "$profile"/indexedDB 2>/dev/null || true
-        rm -rf "$profile"/databases 2>/dev/null || true
-        rm -rf "$profile"/thumbnails 2>/dev/null || true
-        rm -rf "$profile"/saved-telemetry-pings 2>/dev/null || true
-        rm -f "$profile"/webappsstore.sqlite* 2>/dev/null || true
-        rm -f "$profile"/places.sqlite* 2>/dev/null || true
-      done
-    fi
-  done
-  
-  local cache_paths=(
-    "$user_home/.cache/mozilla/firefox"
-    "$user_home/.cache/mozilla"
-  )
-  
-  for cache_path in "${cache_paths[@]}"; do
-    if [[ -d "$cache_path" ]]; then
-      rm -rf "$cache_path"/* 2>/dev/null || true
-    fi
-  done
-}
-
-clear_other_browser_cache() {
-  local user_home="$1"
-  
-  if [[ -d "$user_home/.config/BraveSoftware" ]]; then
-    find "$user_home/.config/BraveSoftware/Brave-Browser" -name "Session*" -delete 2>/dev/null || true
-    find "$user_home/.config/BraveSoftware/Brave-Browser" -name "Cookies*" -delete 2>/dev/null || true
-    rm -rf "$user_home/.cache/BraveSoftware" 2>/dev/null || true
-  fi
-  
-  if [[ -d "$user_home/.config/vivaldi" ]]; then
-    find "$user_home/.config/vivaldi" -name "Session*" -delete 2>/dev/null || true
-    rm -rf "$user_home/.cache/vivaldi" 2>/dev/null || true
-  fi
-  
-  if [[ -d "$user_home/.config/microsoft-edge" ]]; then
-    find "$user_home/.config/microsoft-edge" -name "Session*" -delete 2>/dev/null || true
-    rm -rf "$user_home/.cache/microsoft-edge" 2>/dev/null || true
-  fi
-}
-
-quick_cache_clear() {
-  local browser_type="$1"
-  case "$browser_type" in
-    chrome|chromium)
-      clear_chrome_cache "$HOME" ;;
-    firefox)
-      clear_firefox_cache "$HOME" ;;
-    *)
-      clear_chrome_cache "$HOME"
-      clear_firefox_cache "$HOME"
-      clear_other_browser_cache "$HOME" ;;
-  esac
-}
-
-clear_all_browser_cache() {
-  local current_user="$USER"
-  local current_home="$HOME"
-  log "=== Starting comprehensive browser cache clearing ==="
-  if [[ -n "$current_home" && -d "$current_home" ]]; then
-    log "Clearing cache for current user: $current_user"
-    clear_chrome_cache "$current_home"
-    clear_firefox_cache "$current_home"
-    clear_other_browser_cache "$current_home"
-  fi
-  if [[ "$(id -u)" -eq 0 ]]; then
-    log "Running as root - clearing cache for all users"
-    for user_home in /home/* /root; do
-      if [[ -d "$user_home" && "$user_home" != "$current_home" ]]; then
-        local username
-        username=$(basename "$user_home")
-        log "Cleaning cache for user: $username"
-        clear_chrome_cache "$user_home"
-        clear_firefox_cache "$user_home"
-        clear_other_browser_cache "$user_home"
-      fi
-    done
-  fi
-  log "=== Browser cache clearing complete ==="
-}
-
-clean_browser_data() {
-  log "Cleaning browser cache and session data..."
-  if [[ -n "$BROWSER_TYPE" ]]; then
-    quick_cache_clear "$BROWSER_TYPE"
-  else
-    quick_cache_clear "unknown"
-  fi
-  log "Browser cleanup complete"
-}
-
-# Ensure Unix line endings on generated files (idempotent)
-ensure_unix_line_endings() {
-  local file="$1"
-  if [[ -f "$file" ]] && command -v sed >/dev/null 2>&1; then
-    sed -i 's/\r$//' "$file" 2>/dev/null || true
-  fi
 }
 
 # Function to check if a command is available
@@ -343,8 +104,6 @@ detect_distro() {
 detect_init_system() {
   if pidof systemd >/dev/null 2>&1; then
     INIT_SYSTEM="systemd"
-  elif [ -d /etc/runit ] || [ -d /etc/sv ] || pidof runit >/dev/null 2>&1; then
-    INIT_SYSTEM="runit"
   elif [ -f /etc/inittab ] && command_exists rc-status; then
     INIT_SYSTEM="openrc"
   elif [ -f /etc/inittab ]; then
@@ -365,8 +124,8 @@ install_packages() {
     $UPDATE_CMD || true
     $INSTALL_CMD "${packages[@]}" || true
   elif [ -n "$INSTALL_FRONTEND" ]; then
-    eval "$INSTALL_FRONTEND $UPDATE_CMD" || true
-    eval "$INSTALL_FRONTEND $INSTALL_CMD ${packages[*]}" || true
+    $INSTALL_FRONTEND $UPDATE_CMD || true
+    $INSTALL_FRONTEND $INSTALL_CMD "${packages[@]}" || true
   else
     $UPDATE_CMD || true
     $INSTALL_CMD "${packages[@]}" || true
@@ -407,73 +166,11 @@ choose_server() {
     host="${c#http://}"
     host="${host#https://}"
     host="$(echo "$host" | awk '{print $1}' FS=':|/')"
-    vlog "Pinging server candidate: $c (host=$host)"
     if ping_with_retries "$host" 5 1; then
-      log "Server reachable: $c"
       echo "$c"; return 0
     fi
   done
   echo ""; return 1
-}
-
-# --- Self-update helpers ---
-semver_lt() {
-  # returns 0 if $1 < $2
-  [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" != "$2" ]
-}
-
-download_file() {
-  # usage: download_file URL DEST
-  local url="$1" dest="$2"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsS --connect-timeout 5 --max-time 30 -o "$dest" "$url"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$dest" "$url"
-  else
-    return 1
-  fi
-}
-
-verify_sha256() {
-  # usage: verify_sha256 FILE EXPECTED_HEX
-  local file="$1" expected="$2"
-  [[ -z "$expected" ]] && return 0
-  command -v sha256sum >/dev/null 2>&1 || return 0
-  local got
-  got=$(sha256sum "$file" 2>/dev/null | awk '{print $1}')
-  [[ "$got" == "$expected" ]]
-}
-
-self_update() {
-  # usage: self_update URL [SHA256]
-  local url="$1" sum="$2"
-  [[ -z "$url" ]] && { log "Self-update: no URL provided"; return 1; }
-  local tmp="/tmp/kiosk-client.$$"
-  log "Self-update: downloading $url"
-  if ! download_file "$url" "$tmp"; then
-    log "Self-update: download failed"
-    rm -f "$tmp"; return 1
-  fi
-  ensure_unix_line_endings "$tmp"
-  chmod 0755 "$tmp" 2>/dev/null || true
-  if ! verify_sha256 "$tmp" "$sum"; then
-    log "Self-update: sha256 mismatch"; rm -f "$tmp"; return 1
-  fi
-  # Install atomically to primary path
-  local target="/usr/local/bin/kiosk-client.sh"
-  install -m 0755 "$tmp" "$target" 2>/dev/null || { cp "$tmp" "$target" && chmod 0755 "$target"; }
-  # Maintain compatibility launcher
-  install -m 0755 "$tmp" /usr/local/bin/start-kiosk.sh 2>/dev/null || { cp "$tmp" /usr/local/bin/start-kiosk.sh && chmod 0755 /usr/local/bin/start-kiosk.sh; }
-  rm -f "$tmp"
-  log "Self-update: installed to $target"
-  # Exec the new script to apply immediately unless we are already that path
-  if [[ "$CURRENT_SCRIPT" != "$target" ]]; then
-    log "Self-update: restarting updated client..."
-    exec "$target" "$@"
-  else
-    log "Self-update: re-exec current script..."
-    exec "$CURRENT_SCRIPT" "$@"
-  fi
 }
 
 # Network validation: warn on subnet mismatch
@@ -565,24 +262,6 @@ if [[ "$(id -u)" -eq 0 ]]; then
      fi
    fi
 
-   # --- 4.1 Verification of autologin setup ---
-   echo "[+] Verifying autologin configuration..."
-   if command -v lightdm >/dev/null 2>&1; then
-     grep -Hn "autologin-user" /etc/lightdm/lightdm.conf.d/60-kiosk-autologin.conf 2>/dev/null || echo "[!] LightDM autologin file missing or unreadable"
-   elif command -v slim >/dev/null 2>&1 || [[ -f /etc/slim.conf ]]; then
-     grep -Hn "default_user\|auto_login" /etc/slim.conf 2>/dev/null || echo "[!] SLiM autologin not found in /etc/slim.conf"
-   elif [ "$INIT_SYSTEM" = "runit" ]; then
-     if [ -f /etc/sv/agetty-tty1/run ]; then
-       head -n 1 /etc/sv/agetty-tty1/run 2>/dev/null || true
-     else
-       echo "[!] Runit agetty-tty1 run script not found"
-     fi
-   elif [ "$INIT_SYSTEM" = "sysvinit" ] && [[ -f /etc/inittab ]]; then
-     grep -Hn "login -f tahar" /etc/inittab 2>/dev/null || echo "[!] SysVinit inittab autologin not found"
-   else
-     echo "[i] Autologin verification: no recognized DM/init target"
-   fi
-
    # --- 1.5 Install Utilities (jq for command parsing) ---
    echo "[+] Installing utilities (jq, unclutter, xdotool)..."
    install_packages jq unclutter xdotool
@@ -648,42 +327,6 @@ if [[ "$(id -u)" -eq 0 ]]; then
      echo "tahar ALL=(ALL) NOPASSWD: /sbin/reboot, /sbin/shutdown, /usr/sbin/reboot, /usr/sbin/shutdown, /bin/systemctl reboot, /bin/systemctl poweroff" >> "$SUDOERS_FILE"
      chmod 0440 "$SUDOERS_FILE"
      echo "[+] Added sudo permissions for tahar user"
-   fi
-
-   # Create hostname apply helper and allow passwordless sudo for it
-   echo "[+] Installing hostname apply helper..."
-   cat > /usr/local/sbin/kiosk-hostname-apply << 'EOHN'
-#!/bin/sh
-# Usage: kiosk-hostname-apply <hostname>
-set -e
-HN="$1"
-if [ -z "$HN" ]; then
-  echo "hostname required" >&2; exit 1
-fi
-# Basic validate
-case "$HN" in
-  *[!A-Za-z0-9.-]*|-*|*-) echo "invalid hostname" >&2; exit 1;;
-esac
-if command -v hostnamectl >/dev/null 2>&1; then
-  hostnamectl set-hostname "$HN"
-else
-  printf '%s\n' "$HN" > /etc/hostname
-  hostname "$HN" || true
-fi
-if grep -q '^127.0.1.1' /etc/hosts 2>/dev/null; then
-  sed -i "s/^127.0.1.1\s\+.*/127.0.1.1\t$HN/" /etc/hosts || true
-else
-  printf '127.0.1.1\t%s\n' "$HN" >> /etc/hosts || true
-fi
-exit 0
-EOHN
-   chmod 0755 /usr/local/sbin/kiosk-hostname-apply
-
-   # Extend sudoers to permit running the helper without password
-   if ! grep -q 'kiosk-hostname-apply' "$SUDOERS_FILE" 2>/dev/null; then
-     echo "tahar ALL=(ALL) NOPASSWD: /usr/local/sbin/kiosk-hostname-apply" >> "$SUDOERS_FILE"
-     chmod 0440 "$SUDOERS_FILE"
-     echo "[+] Enabled passwordless hostname changes via helper"
    fi
    # Allow password auth for SSH
    if [[ -f /etc/ssh/sshd_config ]]; then
@@ -793,30 +436,14 @@ exit 1
 EOL
 
    chmod +x /usr/local/bin/kiosk-session.sh
-   ensure_unix_line_endings "/usr/local/bin/kiosk-session.sh"
-
-   # Install compatibility launcher path expected by some deployers
-   echo "[+] Ensuring compatibility launcher at /usr/local/bin/start-kiosk.sh ..."
-   if [ "$(readlink -f "$0")" = "/usr/local/bin/start-kiosk.sh" ]; then
-     echo "[i] Source script already at /usr/local/bin/start-kiosk.sh; skipping copy."
-   else
-     if ! cmp -s "$0" "/usr/local/bin/start-kiosk.sh" 2>/dev/null; then
-       install -m 0755 "$0" /usr/local/bin/start-kiosk.sh || { cp "$0" /usr/local/bin/start-kiosk.sh && chmod 0755 /usr/local/bin/start-kiosk.sh; }
-       echo "[+] Installed /usr/local/bin/start-kiosk.sh"
-     else
-       echo "[i] /usr/local/bin/start-kiosk.sh already up to date"
-     fi
-   fi
-   ensure_unix_line_endings "/usr/local/bin/start-kiosk.sh"
 
    # --- 3.0 Install xbindkeys and set keybinding (Ctrl+Alt+S -> switch user) ---
-   install_packages xbindkeys >/dev/null 2>&1 || true
-   su - tahar -c 'cat > ~/.xbindkeysrc << "XBCFG" 
+   DEBIAN_FRONTEND=noninteractive apt-get install -y xbindkeys >/dev/null 2>&1 || true
+   su - student -c 'cat > ~/.xbindkeysrc << "XBCFG" 
 "dm-tool switch-to-greeter"
   Control+Alt + s
 XBCFG
 '
-   ensure_unix_line_endings "/home/tahar/.xbindkeysrc"
 
    # --- 3.1 Enable and configure SSH if requested ---
    echo "[+] Checking SSH configuration..."
@@ -898,10 +525,9 @@ XBCFG
      mkdir -p /etc/lightdm/lightdm.conf.d
      cat > /etc/lightdm/lightdm.conf.d/60-kiosk-autologin.conf << EOL
 [Seat:*]
-autologin-user=tahar
+autologin-user=student
 autologin-session=kiosk
 EOL
-     ensure_unix_line_endings "/etc/lightdm/lightdm.conf.d/60-kiosk-autologin.conf"
      # Create X-session entry for LightDM
      cat > /usr/share/xsessions/kiosk.desktop << EOL
 [Desktop Entry]
@@ -910,7 +536,6 @@ Comment=Starts the kiosk browser session
 Exec=/usr/local/bin/kiosk-session.sh
 Type=Application
 EOL
-     ensure_unix_line_endings "/usr/share/xsessions/kiosk.desktop"
    
    elif command -v slim >/dev/null 2>&1 || [[ -f /etc/slim.conf ]]; then
      echo "[+] SLiM detected. Configuring SLiM autologin..."
@@ -919,101 +544,75 @@ EOL
      
      # Configure SLiM for autologin
      if [[ -f /etc/slim.conf ]]; then
-       sed -i 's/^#\?default_user.*/default_user        tahar/' /etc/slim.conf
+       sed -i 's/^#\?default_user.*/default_user        student/' /etc/slim.conf
        sed -i 's/^#\?auto_login.*/auto_login          yes/' /etc/slim.conf
-       ensure_unix_line_endings "/etc/slim.conf"
      fi
      
      # Create .xsession for student user (antiX uses this)
-     su - tahar -c 'cat > ~/.xsession << "XSESS"
+     su - student -c 'cat > ~/.xsession << "XSESS"
 #!/bin/bash
 exec /usr/local/bin/kiosk-session.sh
 XSESS
 chmod +x ~/.xsession'
-     ensure_unix_line_endings "/home/tahar/.xsession"
    
    else
      echo "[+] No display manager detected. Configuring .xinitrc for startx autologin..."
      
      # For systems without a display manager, use .xinitrc
-     su - tahar -c 'cat > ~/.xinitrc << "XINITRC"
+     su - student -c 'cat > ~/.xinitrc << "XINITRC"
 #!/bin/bash
 exec /usr/local/bin/kiosk-session.sh
 XINITRC
 chmod +x ~/.xinitrc'
-     ensure_unix_line_endings "/home/tahar/.xinitrc"
-
-     # antiX/runit: configure agetty service for console autologin on tty1
-     if [ "$INIT_SYSTEM" = "runit" ]; then
-       echo "[+] Runit detected. Configuring agetty autologin for tahar on tty1..."
-       mkdir -p /etc/sv/agetty-tty1 2>/dev/null || true
-       cat > /etc/sv/agetty-tty1/run << 'EORUN'
-#!/bin/sh
-exec /sbin/agetty --autologin tahar --noclear tty1 38400 linux
-EORUN
-       chmod +x /etc/sv/agetty-tty1/run
-       ensure_unix_line_endings "/etc/sv/agetty-tty1/run"
-       # Enable service if not linked
-       if [ ! -e /etc/service/agetty-tty1 ]; then
-         ln -s /etc/sv/agetty-tty1 /etc/service/ 2>/dev/null || true
-       fi
-       echo "[+] Runit agetty-tty1 configured (autologin tahar)."
-
-       # Ensure startx is auto-launched on login for tahar
-       su - tahar -c 'cat > ~/.bash_profile << "BASHPROF"
-# Auto-start X on tty1 login (runit/console)
-if [[ -z "$DISPLAY" ]] && [[ $(tty) == "/dev/tty1" ]]; then
-  exec startx
-fi
-BASHPROF
-'
-       ensure_unix_line_endings "/home/tahar/.bash_profile"
-     fi
      
-     # Configure autologin via inittab (SysVinit)
-     if [[ -f /etc/inittab ]] && [ "$INIT_SYSTEM" = "sysvinit" ]; then
+     # Configure autologin via inittab (SysVinit) or getty
+     if [[ -f /etc/inittab ]]; then
        echo "[+] Configuring SysVinit autologin via inittab..."
        # Check if autologin is already configured
-       if ! grep -q "tahar.*startx" /etc/inittab; then
+       if ! grep -q "student.*startx" /etc/inittab; then
          # Backup inittab
          cp /etc/inittab /etc/inittab.backup
          # Replace getty on tty1 with autologin
-         sed -i 's|^1:.*respawn.*getty.*tty1.*|1:2345:respawn:/bin/login -f tahar tty1 </dev/tty1 >/dev/tty1 2>&1|' /etc/inittab
-         ensure_unix_line_endings "/etc/inittab"
+         sed -i 's|^1:.*respawn.*getty.*tty1.*|1:2345:respawn:/bin/login -f student tty1 </dev/tty1 >/dev/tty1 2>&1|' /etc/inittab
        fi
        
        # Create .bash_profile to auto-startx on tty1
-       su - tahar -c 'cat > ~/.bash_profile << "BASHPROF"
+       su - student -c 'cat > ~/.bash_profile << "BASHPROF"
 # Auto-start X on tty1 login
 if [[ -z "$DISPLAY" ]] && [[ $(tty) == "/dev/tty1" ]]; then
   exec startx
 fi
 BASHPROF
 '
-       ensure_unix_line_endings "/home/tahar/.bash_profile"
      fi
    fi
 
    # --- 5. Desktop power settings for Mint (Cinnamon/XFCE) ---
    echo "[+] Applying desktop power/screensaver settings when available..."
    # Cinnamon (Linux Mint)
-   if su - tahar -c 'command -v gsettings >/dev/null 2>&1'; then
-     su - tahar -c "gsettings set org.cinnamon.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'" >/dev/null 2>&1 || true
-     su - tahar -c "gsettings set org.cinnamon.settings-daemon.plugins.power sleep-inactive-ac-timeout 0" >/dev/null 2>&1 || true
-     su - tahar -c "gsettings set org.cinnamon.desktop.session idle-delay 0" >/dev/null 2>&1 || true
-     su - tahar -c "gsettings set org.cinnamon.settings-daemon.plugins.power idle-dim false" >/dev/null 2>&1 || true
+   if su - student -c 'command -v gsettings >/dev/null 2>&1'; then
+     su - student -c "gsettings set org.cinnamon.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'" >/dev/null 2>&1 || true
+     su - student -c "gsettings set org.cinnamon.settings-daemon.plugins.power sleep-inactive-ac-timeout 0" >/dev/null 2>&1 || true
+     su - student -c "gsettings set org.cinnamon.desktop.session idle-delay 0" >/dev/null 2>&1 || true
+     su - student -c "gsettings set org.cinnamon.settings-daemon.plugins.power idle-dim false" >/dev/null 2>&1 || true
    fi
    # XFCE (Mint XFCE flavor)
-   if su - tahar -c 'command -v xfconf-query >/dev/null 2>&1'; then
-     su - tahar -c "xfconf-query -c xfce4-session -p /general/LockCommand -s ''" >/dev/null 2>&1 || true
-     su - tahar -c "xfconf-query -c xfce4-screensaver -p /saver/enabled -s false" >/dev/null 2>&1 || true
-     su - tahar -c "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -s 0" >/dev/null 2>&1 || true
-     su - tahar -c "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/dpms-enabled -s false" >/dev/null 2>&1 || true
+   if su - student -c 'command -v xfconf-query >/dev/null 2>&1'; then
+     su - student -c "xfconf-query -c xfce4-session -p /general/LockCommand -s ''" >/dev/null 2>&1 || true
+     su - student -c "xfconf-query -c xfce4-screensaver -p /saver/enabled -s false" >/dev/null 2>&1 || true
+     su - student -c "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -s 0" >/dev/null 2>&1 || true
+     su - student -c "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/dpms-enabled -s false" >/dev/null 2>&1 || true
    fi
 
    # --- 6. Final Touches ---
    echo "[+] Setting permissions..."
-   chown tahar:tahar /usr/local/bin/kiosk-session.sh
+   chown student:student /usr/local/bin/kiosk-session.sh
+   
+   # Allow student user to reboot and shutdown without password
+   echo "[+] Configuring sudo permissions for student user..."
+   if ! grep -q "student.*reboot" /etc/sudoers 2>/dev/null && ! grep -q "student.*shutdown" /etc/sudoers 2>/dev/null; then
+     echo "student ALL=(ALL) NOPASSWD: /sbin/reboot, /sbin/shutdown" >> /etc/sudoers
+   fi
 
    # Disable power-saving targets to keep kiosk awake
    echo "[+] Disabling power-saving (sleep/suspend/hibernate)..."
@@ -1163,38 +762,6 @@ EORC
    
    echo "[+] Boot cleanup service installed"
 
-   # --- Install kiosk toggle helper (enable/disable) ---
-   echo "[+] Installing kiosk toggle helper..."
-   cat > /usr/local/sbin/kiosk-toggle << 'EOTGL'
-#!/bin/sh
-# Usage: kiosk-toggle enable|disable [reason]
-set -e
-CMD="$1"; shift || true
-FLAG="/etc/kiosk-disabled"
-case "$CMD" in
-  disable)
-    printf '%s\n' "${1:-disabled by server}" > "$FLAG";
-    ;;
-  enable)
-    rm -f "$FLAG";
-    ;;
-  status)
-    if [ -f "$FLAG" ]; then echo disabled; else echo enabled; fi
-    ;;
-  *)
-    echo "usage: $0 enable|disable|status [reason]" >&2; exit 1;
-    ;;
-esac
-exit 0
-EOTGL
-   chmod 0755 /usr/local/sbin/kiosk-toggle
-   # Allow passwordless toggle from kiosk user
-   if ! grep -q 'kiosk-toggle' "$SUDOERS_FILE" 2>/dev/null; then
-     echo "tahar ALL=(ALL) NOPASSWD: /usr/local/sbin/kiosk-toggle" >> "$SUDOERS_FILE"
-     chmod 0440 "$SUDOERS_FILE"
-     echo "[+] Enabled passwordless kiosk toggle"
-   fi
-
    echo "[+] Setup complete!"
    echo "[+] Please reboot the machine now. It will automatically boot into the kiosk."
    exit 0
@@ -1269,11 +836,6 @@ fi
 log "Starting Kiosk Client..."
 log "Configured server base: $SERVER_BASE"
 
-# Global toggle flag path
-KIOSK_DISABLE_FLAG="/etc/kiosk-disabled"
-
-kiosk_is_disabled() { [[ -f "$KIOSK_DISABLE_FLAG" ]]; }
-
 # Optional centralized config sourcing (e.g., from a local fileshare mounted at /mnt/kiosk-config)
 if [[ -d /etc/kiosk-client.d ]]; then
   for f in /etc/kiosk-client.d/*.conf; do [[ -f "$f" ]] && . "$f"; done
@@ -1341,8 +903,6 @@ send_heartbeat() {
   id="$(hostname)-$(cat /etc/machine-id 2>/dev/null || echo unknown)"
   hostname="$(hostname)"
   version="kiosk-client-1.1.0"
-  # Build version from constants
-  version="${CLIENT_NAME}-${VERSION}"
   status="ok"
   current_url="$KIOSK_URL_RUNNING"
 
@@ -1357,16 +917,9 @@ send_heartbeat() {
 EOF
 )
 
-  local http_code
-  resp=$(curl -fsS -w "\n%{http_code}" -X POST "$ACTIVE_SERVER/api/heartbeat" \
+  resp=$(curl -fsS -X POST "$ACTIVE_SERVER/api/heartbeat" \
     -H 'Content-Type: application/json' \
-    -d "$payload") || true
-  http_code=$(echo "$resp" | tail -n1)
-  resp=$(echo "$resp" | sed '$d')
-  if [[ "$http_code" != "200" ]]; then
-    log "WARN: Heartbeat HTTP=$http_code"
-    return 1
-  fi
+    -d "$payload") || return 1
 
   if command_exists jq; then
     commands=$(echo "$resp" | jq -c '.commands // []')
@@ -1394,52 +947,6 @@ EOF
               KIOSK_URL_RUNNING="$new_url"
               save_last_url "$new_url"
               if is_running; then kill "$BROWSER_PID" 2>/dev/null; fi
-            fi
-            ;;
-          update_client)
-            new_bin_url=$(echo "$payload" | jq -r '.url // empty')
-            new_sha256=$(echo "$payload" | jq -r '.sha256 // empty')
-            if [[ -n "$new_bin_url" ]]; then
-              log "Self-update command received"
-              self_update "$new_bin_url" "$new_sha256"
-            else
-              log "Self-update command missing URL"
-            fi
-            ;;
-          set_hostname)
-            target_hn=$(echo "$payload" | jq -r '.hostname // empty')
-            do_reboot=$(echo "$payload" | jq -r '.reboot // false')
-            if [[ -n "$target_hn" ]]; then
-              log "Hostname change requested -> $target_hn"
-              if set_system_hostname "$target_hn"; then
-                log "Hostname updated successfully"
-                if [[ "$do_reboot" == "true" ]]; then
-                  log "Rebooting to apply hostname across services..."
-                  sudo reboot
-                fi
-              else
-                log "Hostname update failed"
-              fi
-            else
-              log "Hostname command missing 'hostname'"
-            fi
-            ;;
-          disable_kiosk)
-            reason=$(echo "$payload" | jq -r '.reason // empty')
-            log "Disable kiosk command received${reason:+: $reason}"
-            sudo /usr/local/sbin/kiosk-toggle disable "$reason" || true
-            if is_running; then
-              log "Stopping browser due to kiosk disable..."
-              kill "$BROWSER_PID" 2>/dev/null || true
-              wait "$BROWSER_PID" 2>/dev/null || true
-            fi
-            ;;
-          enable_kiosk)
-            log "Enable kiosk command received"
-            sudo /usr/local/sbin/kiosk-toggle enable || true
-            # If not running and we have a URL, launch now
-            if ! is_running && [[ -n "$KIOSK_URL_RUNNING" ]]; then
-              launch_browser
             fi
             ;;
           clear_cache)
@@ -1521,6 +1028,216 @@ log "Browser cleanup complete - starting fresh session"
 log "Press Ctrl+C in this terminal to stop the kiosk script."
   log "To exit kiosk mode, press Ctrl+Alt+Shift+Q - this will close the browser."
 
+# ==============================================================================
+# ENHANCED BROWSER CACHE CLEARING FUNCTIONS
+# ==============================================================================
+
+# Comprehensive cache clearing for Chrome/Chromium (all variants including Flatpak/Snap)
+clear_chrome_cache() {
+  local user_home="$1"
+  log "Clearing Chrome/Chromium cache for: $user_home"
+  
+  # Chrome variants to check
+  local chrome_paths=(
+    "$user_home/.config/google-chrome"
+    "$user_home/.config/chromium"
+    "$user_home/.config/chrome"
+    "$user_home/.var/app/com.google.Chrome"  # Flatpak
+    "$user_home/snap/chromium/common/chromium" # Snap
+  )
+  
+  for chrome_path in "${chrome_paths[@]}"; do
+    if [[ -d "$chrome_path" ]]; then
+      # Clear all profiles (Default, Profile 1, Profile 2, etc.)
+      find "$chrome_path" -maxdepth 1 -type d \( -name "Default" -o -name "Profile *" \) 2>/dev/null | while read -r profile; do
+        # Session and state files
+        rm -rf "$profile"/Session* 2>/dev/null || true
+        rm -rf "$profile"/'Current Session' 2>/dev/null || true
+        rm -rf "$profile"/'Current Tabs' 2>/dev/null || true
+        rm -rf "$profile"/'Last Session' 2>/dev/null || true
+        rm -rf "$profile"/'Last Tabs' 2>/dev/null || true
+        
+        # Cookies and storage
+        rm -rf "$profile"/Cookies* 2>/dev/null || true
+        rm -rf "$profile"/'Local Storage' 2>/dev/null || true
+        rm -rf "$profile"/'Session Storage' 2>/dev/null || true
+        rm -rf "$profile"/'IndexedDB' 2>/dev/null || true
+        
+        # Cache directories
+        rm -rf "$profile"/Cache* 2>/dev/null || true
+        rm -rf "$profile"/'Service Worker' 2>/dev/null || true
+        rm -rf "$profile"/'Code Cache' 2>/dev/null || true
+        rm -rf "$profile"/'GPUCache' 2>/dev/null || true
+        
+        # Application cache and misc
+        rm -rf "$profile"/'Application Cache' 2>/dev/null || true
+        rm -rf "$profile"/'Media Cache' 2>/dev/null || true
+        rm -rf "$profile"/Databases 2>/dev/null || true
+        rm -rf "$profile"/FileSystem 2>/dev/null || true
+      done
+      
+      # Clear ShaderCache (shared across profiles)
+      rm -rf "$chrome_path"/ShaderCache 2>/dev/null || true
+    fi
+  done
+  
+  # System cache directories
+  local cache_paths=(
+    "$user_home/.cache/google-chrome"
+    "$user_home/.cache/chromium"
+    "$user_home/.cache/chrome"
+  )
+  
+  for cache_path in "${cache_paths[@]}"; do
+    if [[ -d "$cache_path" ]]; then
+      rm -rf "$cache_path"/* 2>/dev/null || true
+    fi
+  done
+}
+
+# Comprehensive cache clearing for Firefox (all variants including Flatpak/Snap)
+clear_firefox_cache() {
+  local user_home="$1"
+  log "Clearing Firefox cache for: $user_home"
+  
+  # Firefox profile locations
+  local firefox_paths=(
+    "$user_home/.mozilla/firefox"
+    "$user_home/.var/app/org.mozilla.firefox/.mozilla/firefox" # Flatpak
+    "$user_home/snap/firefox/common/.mozilla/firefox" # Snap
+  )
+  
+  for firefox_path in "${firefox_paths[@]}"; do
+    if [[ -d "$firefox_path" ]]; then
+      # Find all profiles (*.default, *.default-release, etc.)
+      find "$firefox_path" -maxdepth 1 -type d -name "*.default*" 2>/dev/null | while read -r profile; do
+        # Session files
+        rm -f "$profile"/sessionstore* 2>/dev/null || true
+        rm -f "$profile"/sessionCheckpoints.json 2>/dev/null || true
+        
+        # Cookies and storage
+        rm -f "$profile"/cookies.sqlite* 2>/dev/null || true
+        rm -rf "$profile"/storage 2>/dev/null || true
+        rm -rf "$profile"/storage.sqlite 2>/dev/null || true
+        
+        # Cache directories
+        rm -rf "$profile"/cache2 2>/dev/null || true
+        rm -rf "$profile"/startupCache 2>/dev/null || true
+        rm -rf "$profile"/OfflineCache 2>/dev/null || true
+        
+        # IndexedDB and other storage
+        rm -rf "$profile"/indexedDB 2>/dev/null || true
+        rm -rf "$profile"/databases 2>/dev/null || true
+        
+        # Thumbnails and misc
+        rm -rf "$profile"/thumbnails 2>/dev/null || true
+        rm -rf "$profile"/saved-telemetry-pings 2>/dev/null || true
+        rm -f "$profile"/webappsstore.sqlite* 2>/dev/null || true
+        rm -f "$profile"/places.sqlite* 2>/dev/null || true
+      done
+    fi
+  done
+  
+  # System cache directories
+  local cache_paths=(
+    "$user_home/.cache/mozilla/firefox"
+    "$user_home/.cache/mozilla"
+  )
+  
+  for cache_path in "${cache_paths[@]}"; do
+    if [[ -d "$cache_path" ]]; then
+      rm -rf "$cache_path"/* 2>/dev/null || true
+    fi
+  done
+}
+
+# Clear cache for other browsers (Brave, Vivaldi, Edge, etc.)
+clear_other_browser_cache() {
+  local user_home="$1"
+  
+  # Brave
+  if [[ -d "$user_home/.config/BraveSoftware" ]]; then
+    find "$user_home/.config/BraveSoftware/Brave-Browser" -name "Session*" -delete 2>/dev/null || true
+    find "$user_home/.config/BraveSoftware/Brave-Browser" -name "Cookies*" -delete 2>/dev/null || true
+    rm -rf "$user_home/.cache/BraveSoftware" 2>/dev/null || true
+  fi
+  
+  # Vivaldi
+  if [[ -d "$user_home/.config/vivaldi" ]]; then
+    find "$user_home/.config/vivaldi" -name "Session*" -delete 2>/dev/null || true
+    rm -rf "$user_home/.cache/vivaldi" 2>/dev/null || true
+  fi
+  
+  # Edge
+  if [[ -d "$user_home/.config/microsoft-edge" ]]; then
+    find "$user_home/.config/microsoft-edge" -name "Session*" -delete 2>/dev/null || true
+    rm -rf "$user_home/.cache/microsoft-edge" 2>/dev/null || true
+  fi
+}
+
+# Quick cache clear for current user only (used before each browser launch)
+quick_cache_clear() {
+  local browser_type="$1"
+  
+  case "$browser_type" in
+    chrome|chromium)
+      clear_chrome_cache "$HOME"
+      ;;
+    firefox)
+      clear_firefox_cache "$HOME"
+      ;;
+    *)
+      # Clear all if browser type unknown
+      clear_chrome_cache "$HOME"
+      clear_firefox_cache "$HOME"
+      clear_other_browser_cache "$HOME"
+      ;;
+  esac
+}
+
+# Master cache clearing function - works for all users (if root)
+clear_all_browser_cache() {
+  local current_user="$USER"
+  local current_home="$HOME"
+  
+  log "=== Starting comprehensive browser cache clearing ==="
+  
+  # Clear cache for current user
+  if [[ -n "$current_home" && -d "$current_home" ]]; then
+    log "Clearing cache for current user: $current_user"
+    clear_chrome_cache "$current_home"
+    clear_firefox_cache "$current_home"
+    clear_other_browser_cache "$current_home"
+  fi
+  
+  # If running as root, clear cache for all users
+  if [[ "$(id -u)" -eq 0 ]]; then
+    log "Running as root - clearing cache for all users"
+    for user_home in /home/* /root; do
+      if [[ -d "$user_home" && "$user_home" != "$current_home" ]]; then
+        local username
+        username=$(basename "$user_home")
+        log "Clearing cache for user: $username"
+        clear_chrome_cache "$user_home"
+        clear_firefox_cache "$user_home"
+        clear_other_browser_cache "$user_home"
+      fi
+    done
+  fi
+  
+  log "=== Browser cache clearing complete ==="
+}
+
+# Wrapper for backward compatibility
+clean_browser_data() {
+  log "Cleaning browser cache and session data..."
+  if [[ -n "$BROWSER_TYPE" ]]; then
+    quick_cache_clear "$BROWSER_TYPE"
+  else
+    quick_cache_clear "unknown"
+  fi
+  log "Browser cleanup complete"
+}
 
 launch_browser() {
   # Clean session data before each launch
@@ -1545,11 +1262,7 @@ trap 'if [[ -n "$BROWSER_PID" ]]; then kill "$BROWSER_PID" 2>/dev/null; fi; exit
 if [[ -z "$KIOSK_URL_RUNNING" || "$KIOSK_URL_RUNNING" == "file://"* ]]; then
   log "Initial URL is empty or offline. Waiting for server before first launch."
 else
-  if kiosk_is_disabled; then
-    log "Kiosk is DISABLED (flag present). Not launching browser."
-  else
-    launch_browser
-  fi
+  launch_browser
 fi
 
 # Monitor for changes and process health
@@ -1587,34 +1300,8 @@ while true; do
 
   # Relaunch if the browser crashed/closed for any reason
   if ! is_running; then
-    if kiosk_is_disabled; then
-      log "Browser not running and kiosk is disabled: skip relaunch"
-    else
-      log "Browser not running. Relaunching..."
-      launch_browser
-    fi
-  fi
-
-  # Periodic self-update check (default hourly)
-  if [[ -n "$ACTIVE_SERVER" ]]; then
-    now_ts=$(date +%s)
-    LAST_UPDATE_CHECK=${LAST_UPDATE_CHECK:-0}
-    if (( now_ts - LAST_UPDATE_CHECK > 3600 )); then
-      LAST_UPDATE_CHECK=$now_ts
-      # Query version endpoint if available
-      if command -v curl >/dev/null 2>&1; then
-        ver_json=$(curl -fsS --connect-timeout 3 --max-time 5 "$ACTIVE_SERVER/api/client/version" 2>/dev/null || true)
-        if [[ -n "$ver_json" ]]; then
-          new_ver=$(echo "$ver_json" | awk -F'"' '/"version"/ {print $4; exit}')
-          new_url=$(echo "$ver_json" | awk -F'"' '/"url"/ {print $4; exit}')
-          new_sha=$(echo "$ver_json" | awk -F'"' '/"sha256"/ {print $4; exit}')
-          if [[ -n "$new_ver" && -n "$new_url" ]] && semver_lt "$VERSION" "$new_ver"; then
-            log "Found newer client version $new_ver (current $VERSION). Updating..."
-            self_update "$new_url" "$new_sha"
-          fi
-        fi
-      fi
-    fi
+    log "Browser not running. Relaunching..."
+    launch_browser
   fi
 
   sleep 15 # Main loop interval

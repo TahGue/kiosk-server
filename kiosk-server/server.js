@@ -44,7 +44,7 @@ app.use(express.static(path.join(__dirname, staticDir), { index: false }));
 
 // Force HTTPS in production
 const forceHttps = (process.env.FORCE_HTTPS || 'false').toLowerCase() === 'true';
-if (process.env.NODE_ENV === 'production' || forceHttps) {
+if (forceHttps) {
   app.use(enforce.HTTPS({ trustProtoHeader: true }));
 }
 
@@ -53,8 +53,39 @@ const CONFIG_DIR = path.join(__dirname, 'config');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'kiosk-config.json');
 const HEARTBEAT_FILE = path.join(CONFIG_DIR, 'heartbeat-clients.json');
 
+// Deploy logs storage
+const LOGS_DIR = path.join(__dirname, 'logs');
+const DEPLOY_LOGS_DIR = path.join(LOGS_DIR, 'deploys');
+const DEPLOY_INDEX_FILE = path.join(DEPLOY_LOGS_DIR, 'index.json');
+
 function ensureConfigDir() {
   try { fs.mkdirSync(CONFIG_DIR, { recursive: true }); } catch (_) {}
+}
+
+function ensureLogsDir() {
+  try { fs.mkdirSync(DEPLOY_LOGS_DIR, { recursive: true }); } catch (_) {}
+}
+
+function loadDeployIndex() {
+  try {
+    ensureLogsDir();
+    if (fs.existsSync(DEPLOY_INDEX_FILE)) {
+      const raw = fs.readFileSync(DEPLOY_INDEX_FILE, 'utf8');
+      return JSON.parse(raw);
+    }
+  } catch (e) {
+    console.warn('[DEPLOY] Failed to load deploy index:', e.message || e);
+  }
+  return [];
+}
+
+function saveDeployIndex(list) {
+  try {
+    ensureLogsDir();
+    fs.writeFileSync(DEPLOY_INDEX_FILE, JSON.stringify(list, null, 2), 'utf8');
+  } catch (e) {
+    console.warn('[DEPLOY] Failed to save deploy index:', e.message || e);
+  }
 }
 
 function loadConfigFromDisk() {
@@ -283,6 +314,52 @@ app.post('/api/config/ip/:ip', (req, res) => {
 // UI defaults endpoint to help prefill admin inputs
 app.get('/api/ui-defaults', (req, res) => {
   res.json(uiDefaults);
+});
+
+// --- Deploy logs API ---
+// Create a new deploy log entry and append content
+app.post('/api/deploy/log', (req, res) => {
+  try {
+    const { deploymentId, target, status, content } = req.body || {};
+    ensureLogsDir();
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const id = deploymentId || `${ts}-${Math.random().toString(36).slice(2, 8)}`;
+    const file = path.join(DEPLOY_LOGS_DIR, `${id}.log`);
+    const line = `[${new Date().toISOString()}] target=${target || '-'} status=${status || 'info'}\n${(content || '').toString()}\n`;
+    fs.appendFileSync(file, line, 'utf8');
+    const index = loadDeployIndex();
+    const entry = { id, file: path.relative(__dirname, file), target: target || null, status: status || 'info', updatedAt: new Date().toISOString() };
+    const existingIdx = index.findIndex(x => x.id === id);
+    if (existingIdx >= 0) index[existingIdx] = entry; else index.unshift(entry);
+    saveDeployIndex(index.slice(0, 200)); // keep last 200
+    res.json({ ok: true, id, file: entry.file });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+// List recent deploy logs
+app.get('/api/deploy/logs', (req, res) => {
+  try {
+    const index = loadDeployIndex();
+    res.json(index);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+// Get a specific deploy log
+app.get('/api/deploy/logs/:id', (req, res) => {
+  try {
+    const id = req.params.id;
+    ensureLogsDir();
+    const file = path.join(DEPLOY_LOGS_DIR, `${id}.log`);
+    if (!fs.existsSync(file)) return res.status(404).json({ error: 'Not found' });
+    res.set('Content-Type', 'text/plain');
+    res.send(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err?.message || err) });
+  }
 });
 
 // Server-Sent Events stream for admin/client UI
@@ -527,16 +604,18 @@ function checkRateLimit(ip, maxPerMinute) {
   }
   
   rateLimits.set(ip, limit);
-  
-  // Clean old entries periodically
-  if (rateLimits.size > 1000) {
+  return limit.count <= maxPerMinute;
+}
+
+// Clean old rate limit entries periodically (every 5 minutes)
+setInterval(() => {
+  const now = Date.now();
+  if (rateLimits.size > 0) {
     for (const [key, val] of rateLimits.entries()) {
       if (now > val.resetTime) rateLimits.delete(key);
     }
   }
-  
-  return limit.count <= maxPerMinute;
-}
+}, 5 * 60 * 1000);
 
 // Clean up verbose vendor names from OUI database
 function cleanVendorName(vendor) {
@@ -781,17 +860,29 @@ async function resolveHostname(ip) {
     }
   ];
 
-  const results = await Promise.all(resolvers.map(r => r()));
-  const hostname = results.find(h => h && typeof h === 'string' && h !== ip) || null;
-
-  if (hostname) {
-    cacheHostname(ip, hostname);
-    console.log(`[HOSTNAME] Resolved ${ip} -> ${hostname}`);
-  } else {
+  // Return the first successful resolution (race for success)
+  // We can't use Promise.any because these resolve to null on failure, not reject.
+  // So we wrap them to reject if null, allowing Promise.any to work, 
+  // or manually fallback if all fail.
+  try {
+    const successfulHostname = await Promise.any(
+      resolvers.map(r => r().then(val => {
+        if (!val || val === ip) throw new Error('No resolution');
+        return val;
+      }))
+    );
+    
+    if (successfulHostname) {
+      cacheHostname(ip, successfulHostname);
+      console.log(`[HOSTNAME] Resolved ${ip} -> ${successfulHostname}`);
+      return successfulHostname;
+    }
+  } catch (e) {
+    // All promises rejected (failed to find a hostname)
     console.log(`[HOSTNAME] No hostname resolved for ${ip}`);
   }
 
-  return hostname;
+  return null;
 }
 
 async function scanLanViaArp() {
